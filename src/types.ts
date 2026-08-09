@@ -11,6 +11,7 @@ export interface MicroManagerNote {
   note: string;
   severity?: MicroManagerSeverity;
   manager?: string;
+  model?: string;
 }
 
 export interface MicroManagerMessageDetails {

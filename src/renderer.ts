@@ -28,7 +28,8 @@ export const renderMicroManagerMessage: MessageRenderer<MicroManagerMessageDetai
     const severity = entry.severity ?? "nit";
     const glyph = theme.fg(severityColor(severity), SEVERITY_GLYPHS[severity]);
     const source = entry.manager ? `${theme.fg("dim", sanitize(entry.manager))} ` : "";
-    box.addChild(new Text(`${glyph} ${source}${sanitize(entry.note)}`, 0, 0));
+    const detail = expanded && entry.model ? theme.fg("dim", ` · ${sanitize(entry.model)}`) : "";
+    box.addChild(new Text(`${glyph} ${source}${sanitize(entry.note)}${detail}`, 0, 0));
   }
   if (shown.length < notes.length) {
     box.addChild(new Text(theme.fg("dim", `+${notes.length - shown.length}`), 0, 0));

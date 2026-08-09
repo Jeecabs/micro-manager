@@ -210,6 +210,7 @@ test("reviews turn asynchronously and preserves a late concern without waking th
   assert.deepEqual(h.sendCalls[0]?.message.details.notes[0], {
     note: "Escape <unsafe> output.",
     severity: "concern",
+    model: "openai/primary-model",
   });
 });
 
