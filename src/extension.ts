@@ -74,6 +74,8 @@ export function registerMicroManagerExtension(
   let deliveredNotes = 0;
   let pendingHeadlessNotes: MicroManagerNote[] = [];
   let activeContext: ExtensionContext | undefined;
+  let blinkTimer: ReturnType<typeof setInterval> | undefined;
+  let blinkFrame = 0;
 
   pi.registerFlag("micro-manager", {
     description: "Enable The Micro Manager for this process",
@@ -203,6 +205,7 @@ export function registerMicroManagerExtension(
     pendingHeadlessNotes = [];
     stopRunners();
     cursor.reset();
+    stopBlink();
     if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
   });
 
@@ -323,7 +326,7 @@ export function registerMicroManagerExtension(
         maxAttempts: configuration.settings.maxAttempts,
         onReport: (note) => {
           if (expectedEpoch !== sessionEpoch || activeContext !== ctx) return;
-          routeReport(note, ctx);
+          routeReport({ ...note, model: `${resolved.model.provider}/${resolved.model.id}` }, ctx);
         },
         onStateChange: () => {
           if (expectedEpoch === sessionEpoch && activeContext === ctx) refreshStatus(ctx);
@@ -415,9 +418,20 @@ export function registerMicroManagerExtension(
     return lines.join("\n");
   }
 
+  // ponytail: blink is a footer-status timer, not setWorkingIndicator — that would hijack the primary spinner
+  const BLINK_FRAMES = ["ಠ_ಠ", "ಠ_ಠ", "ಠ_ಠ", "–_–"];
+
+  function stopBlink(): void {
+    if (!blinkTimer) return;
+    clearInterval(blinkTimer);
+    blinkTimer = undefined;
+    blinkFrame = 0;
+  }
+
   function refreshStatus(ctx: ExtensionContext): void {
     if (!ctx.hasUI) return;
     if (!configuration && runners.length === 0) {
+      stopBlink();
       ctx.ui.setStatus(STATUS_KEY, undefined);
       return;
     }
@@ -425,12 +439,22 @@ export function registerMicroManagerExtension(
     const hasError = stats.some((stat) => stat.state === "error");
     const backlog = stats.reduce((sum, stat) => sum + stat.backlog, 0);
     const theme = ctx.ui.theme;
+    if (isEnabled() && !hasError && backlog > 0) {
+      if (!blinkTimer) {
+        blinkTimer = setInterval(() => {
+          blinkFrame++;
+          if (activeContext) refreshStatus(activeContext);
+        }, 600);
+        blinkTimer.unref?.();
+      }
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("warning", `${BLINK_FRAMES[blinkFrame % BLINK_FRAMES.length]} …`));
+      return;
+    }
+    stopBlink();
     if (!isEnabled()) {
       ctx.ui.setStatus(STATUS_KEY, theme.fg("dim", "ಠ‿ಠ"));
     } else if (hasError) {
       ctx.ui.setStatus(STATUS_KEY, theme.fg("error", "ಠ_ಠ !"));
-    } else if (backlog > 0) {
-      ctx.ui.setStatus(STATUS_KEY, theme.fg("warning", "ಠ_ಠ …"));
     } else if (runners.length > 0) {
       const count = runners.length > 1 ? ` ×${runners.length}` : "";
       ctx.ui.setStatus(STATUS_KEY, theme.fg("muted", `ಠ_ಠ${count}`));
