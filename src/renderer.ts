@@ -1,7 +1,11 @@
 import type { MessageRenderer } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { normalizeMicroManagerText } from "./message-format.ts";
-import type { MicroManagerMessageDetails, MicroManagerSeverity } from "./types.ts";
+import { MICRO_MANAGER_SEVERITIES, type MicroManagerMessageDetails, type MicroManagerSeverity } from "./types.ts";
+
+export const MICRO_MANAGER_GLYPH = "ಠ_ಠ";
+
+const SEVERITY_GLYPHS: Record<MicroManagerSeverity, string> = { nit: "·", concern: "▲", blocker: "✖" };
 
 export const renderMicroManagerMessage: MessageRenderer<MicroManagerMessageDetails> = (
   message,
@@ -10,19 +14,24 @@ export const renderMicroManagerMessage: MessageRenderer<MicroManagerMessageDetai
 ) => {
   const notes = message.details?.notes ?? [];
   const box = new Box(outputPad, 1, (text) => theme.bg("customMessageBg", text));
-  const blockerCount = notes.filter((note) => note.severity === "blocker").length;
-  const summary = blockerCount > 0 ? `${notes.length} notes · ${blockerCount} blocker` : `${notes.length} notes`;
-  box.addChild(new Text(`${theme.fg("accent", theme.bold("The Micro Manager"))} ${theme.fg("dim", summary)}`, 0, 0));
+  const counts: Record<MicroManagerSeverity, number> = { nit: 0, concern: 0, blocker: 0 };
+  for (const note of notes) counts[note.severity ?? "nit"]++;
+  const summary = [...MICRO_MANAGER_SEVERITIES]
+    .reverse()
+    .filter((severity) => counts[severity] > 0)
+    .map((severity) => theme.fg(severityColor(severity), `${SEVERITY_GLYPHS[severity]}${counts[severity]}`))
+    .join(" ");
+  box.addChild(new Text(`${theme.fg("accent", theme.bold(MICRO_MANAGER_GLYPH))}  ${summary}`.trimEnd(), 0, 0));
 
   const shown = expanded ? notes : notes.slice(0, 3);
   for (const entry of shown) {
     const severity = entry.severity ?? "nit";
-    const source = entry.manager ? ` [${sanitize(entry.manager)}]` : "";
-    const prefix = theme.fg(severityColor(severity), `${severity}${source}`);
-    box.addChild(new Text(`${prefix}\n${sanitize(entry.note)}`, 0, 0));
+    const glyph = theme.fg(severityColor(severity), SEVERITY_GLYPHS[severity]);
+    const source = entry.manager ? `${theme.fg("dim", sanitize(entry.manager))} ` : "";
+    box.addChild(new Text(`${glyph} ${source}${sanitize(entry.note)}`, 0, 0));
   }
   if (shown.length < notes.length) {
-    box.addChild(new Text(theme.fg("dim", `… ${notes.length - shown.length} more`), 0, 0));
+    box.addChild(new Text(theme.fg("dim", `+${notes.length - shown.length}`), 0, 0));
   }
   if (notes.length === 0) box.addChild(new Text(sanitize(contentText(message.content)), 0, 0));
   return box;

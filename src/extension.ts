@@ -426,16 +426,16 @@ export function registerMicroManagerExtension(
     const backlog = stats.reduce((sum, stat) => sum + stat.backlog, 0);
     const theme = ctx.ui.theme;
     if (!isEnabled()) {
-      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("dim", "○")} ${theme.fg("dim", "micro-manager")}`);
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("dim", "ಠ‿ಠ"));
     } else if (hasError) {
-      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("error", "!")} ${theme.fg("muted", "micro-manager")}`);
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("error", "ಠ_ಠ !"));
     } else if (backlog > 0) {
-      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("warning", "…")} ${theme.fg("muted", "micro-manager")}`);
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("warning", "ಠ_ಠ …"));
     } else if (runners.length > 0) {
-      const count = runners.length > 1 ? ` ${runners.length}` : "";
-      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("success", "●")} ${theme.fg("muted", `micro-manager${count}`)}`);
+      const count = runners.length > 1 ? ` ×${runners.length}` : "";
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("muted", `ಠ_ಠ${count}`));
     } else {
-      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("warning", "○")} ${theme.fg("muted", "micro-manager")}`);
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("warning", "ಠ_ಠ ?"));
     }
   }
 }
