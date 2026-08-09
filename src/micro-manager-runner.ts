@@ -16,13 +16,13 @@ import {
 } from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai/compat";
 import { Type, type Static } from "typebox";
-import { isAdvisorSeverity, normalizeAdvisoryText } from "./advisory-format.ts";
-import { AdvisorEmissionGuard } from "./emission-guard.ts";
-import type { AdvisorNote, AdvisorRuntimeStats } from "./types.ts";
+import { isMicroManagerSeverity, normalizeMicroManagerText } from "./message-format.ts";
+import { MicroManagerEmissionGuard } from "./emission-guard.ts";
+import type { MicroManagerNote, MicroManagerRuntimeStats } from "./types.ts";
 
 const MAX_TOOL_CALLS_PER_RESPONSE = 8;
 
-const adviseSchema = Type.Object({
+const reportSchema = Type.Object({
   note: Type.String({ minLength: 1, description: "One concrete, terse, actionable note for the driving agent." }),
   severity: Type.Optional(
     StringEnum(["nit", "concern", "blocker"] as const, {
@@ -30,15 +30,15 @@ const adviseSchema = Type.Object({
     }),
   ),
 });
-type AdviseArguments = Static<typeof adviseSchema>;
+type ReportArguments = Static<typeof reportSchema>;
 
-const adviseTool: Tool<typeof adviseSchema> = {
-  name: "advise",
-  description: "Send one concrete, terse piece of advice to the driving agent. Stay silent when nothing matters.",
-  parameters: adviseSchema,
+const reportTool: Tool<typeof reportSchema> = {
+  name: "report",
+  description: "Send one concrete, terse review note to the driving agent. Stay silent when nothing matters.",
+  parameters: reportSchema,
 };
 
-export interface AdvisorCompletionClient {
+export interface MicroManagerCompletionClient {
   complete(
     model: Model<any>,
     context: Context,
@@ -46,33 +46,33 @@ export interface AdvisorCompletionClient {
   ): Promise<AssistantMessage>;
 }
 
-export interface AdvisorRunnerOptions {
+export interface MicroManagerRunnerOptions {
   name: string;
   model: Model<any>;
   thinking: ThinkingLevel;
   systemPrompt: string;
   tools: AgentTool[];
-  complete: AdvisorCompletionClient["complete"];
+  complete: MicroManagerCompletionClient["complete"];
   timeoutMs: number;
   maxOutputTokens: number;
   maxToolRounds: number;
   maxContextChars: number;
   maxAttempts: number;
-  onAdvice(note: AdvisorNote): void;
+  onReport(note: MicroManagerNote): void;
   onStateChange?(): void;
   retryDelayMs?: number;
 }
 
-export class AdvisorRunner {
-  readonly #complete: AdvisorCompletionClient["complete"];
-  readonly #guard = new AdvisorEmissionGuard();
+export class MicroManagerRunner {
+  readonly #complete: MicroManagerCompletionClient["complete"];
+  readonly #guard = new MicroManagerEmissionGuard();
   readonly #maxAttempts: number;
   readonly #maxContextChars: number;
   readonly #maxOutputTokens: number;
   readonly #maxToolRounds: number;
   readonly #model: Model<any>;
   readonly #name: string;
-  readonly #onAdvice: (note: AdvisorNote) => void;
+  readonly #onReport: (note: MicroManagerNote) => void;
   readonly #onStateChange: (() => void) | undefined;
   readonly #retryDelayMs: number;
   readonly #sessionId = uuidv7();
@@ -88,15 +88,15 @@ export class AdvisorRunner {
   #iterationAbort: AbortController | undefined;
   #messages: Message[] = [];
   #pending: string[] = [];
-  #stats: AdvisorRuntimeStats;
+  #stats: MicroManagerRuntimeStats;
 
-  constructor(options: AdvisorRunnerOptions) {
+  constructor(options: MicroManagerRunnerOptions) {
     this.#name = options.name;
     this.#model = options.model;
     this.#thinking = options.thinking;
     this.#systemPrompt = options.systemPrompt;
     this.#toolMap = new Map(options.tools.map((tool) => [tool.name, tool]));
-    this.#tools = [adviseTool, ...options.tools];
+    this.#tools = [reportTool, ...options.tools];
     this.#complete = options.complete;
     this.#timeoutMs = options.timeoutMs;
     this.#maxOutputTokens = options.maxOutputTokens;
@@ -111,7 +111,7 @@ export class AdvisorRunner {
         Math.floor(options.maxContextChars / (2 * Math.max(1, options.maxToolRounds) * MAX_TOOL_CALLS_PER_RESPONSE)),
       ),
     );
-    this.#onAdvice = options.onAdvice;
+    this.#onReport = options.onReport;
     this.#onStateChange = options.onStateChange;
     this.#stats = {
       name: options.name,
@@ -125,7 +125,7 @@ export class AdvisorRunner {
     };
   }
 
-  get stats(): AdvisorRuntimeStats {
+  get stats(): MicroManagerRuntimeStats {
     return { ...this.#stats, backlog: this.backlog };
   }
 
@@ -137,7 +137,7 @@ export class AdvisorRunner {
     return this.#messages
       .map((message) => {
         if (message.role === "user") return `## Update\n\n${textContent(message.content)}`;
-        if (message.role === "assistant") return `## Advisor\n\n${textContent(message.content) || "(tool calls or silence)"}`;
+        if (message.role === "assistant") return `## The Micro Manager\n\n${textContent(message.content) || "(tool calls or silence)"}`;
         return `## Tool: ${message.toolName}${message.isError ? " (error)" : ""}\n\n${textContent(message.content)}`;
       })
       .join("\n\n");
@@ -168,7 +168,7 @@ export class AdvisorRunner {
   reset(): void {
     if (this.#disposed) return;
     this.#epoch++;
-    this.#iterationAbort?.abort("advisor reset");
+    this.#iterationAbort?.abort("micro-manager reset");
     this.#pending = [];
     this.#messages = [];
     this.#guard.reset();
@@ -181,7 +181,7 @@ export class AdvisorRunner {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#epoch++;
-    this.#iterationAbort?.abort("advisor disposed");
+    this.#iterationAbort?.abort("micro-manager disposed");
     this.#pending = [];
     this.#stats.state = "paused";
     this.#notifyState();
@@ -237,19 +237,20 @@ export class AdvisorRunner {
 
   async #review(update: string, parentSignal: AbortSignal, epoch: number): Promise<void> {
     const boundedUpdate = boundUpdate(update, Math.max(1_000, Math.floor(this.#maxContextChars / 2)));
-    if (contextChars(this.#messages) + boundedUpdate.length > this.#maxContextChars) {
+    const updateMessage: Message = {
+      role: "user",
+      content: [{ type: "text", text: boundedUpdate }],
+      timestamp: Date.now(),
+    };
+    if (contextChars([...this.#messages, updateMessage]) > this.#maxContextChars) {
       this.#messages = [];
       this.#guard.reset();
     }
     this.#guard.beginUpdate();
-    this.#messages.push({
-      role: "user",
-      content: [{ type: "text", text: boundedUpdate }],
-      timestamp: Date.now(),
-    });
+    this.#messages.push(updateMessage);
 
     const timeout = new AbortController();
-    const timer = setTimeout(() => timeout.abort("advisor update timed out"), this.#timeoutMs);
+    const timer = setTimeout(() => timeout.abort("micro-manager update timed out"), this.#timeoutMs);
     timer.unref?.();
     const signal = AbortSignal.any([parentSignal, timeout.signal]);
     try {
@@ -266,33 +267,35 @@ export class AdvisorRunner {
 
         if (response.stopReason === "aborted") {
           signal.throwIfAborted();
-          throw new Error(response.errorMessage || "advisor provider aborted the request");
+          throw new Error(response.errorMessage || "micro-manager provider aborted the request");
         }
-        if (response.stopReason === "error") throw new Error(response.errorMessage || "advisor provider returned an error");
-        if (response.stopReason === "length") throw new Error("advisor response reached its output-token limit");
+        if (response.stopReason === "error") {
+          throw new Error(response.errorMessage || "micro-manager provider returned an error");
+        }
+        if (response.stopReason === "length") throw new Error("micro-manager response reached its output-token limit");
 
         const calls = response.content.filter((block): block is ToolCall => block.type === "toolCall");
         if (calls.length === 0) return;
         const toolLimitReached = round >= this.#maxToolRounds;
         const results = await Promise.all(
           calls.map((call, index) => {
-            if (index >= MAX_TOOL_CALLS_PER_RESPONSE && call.name !== "advise") {
+            if (index >= MAX_TOOL_CALLS_PER_RESPONSE && call.name !== "report") {
               return {
-                message: errorToolResult(call, "Advisor tool-call limit reached for this response"),
-                adviceHandled: false,
+                message: errorToolResult(call, "Micro-manager tool-call limit reached for this response"),
+                reportHandled: false,
               };
             }
-            if (toolLimitReached && call.name !== "advise") {
+            if (toolLimitReached && call.name !== "report") {
               return {
-                message: errorToolResult(call, "Advisor read-only tool-round limit reached"),
-                adviceHandled: false,
+                message: errorToolResult(call, "Micro-manager read-only tool-round limit reached"),
+                reportHandled: false,
               };
             }
             return this.#executeToolCall(call, signal);
           }),
         );
         this.#messages.push(...results.map((entry) => entry.message));
-        if (results.some((entry) => entry.adviceHandled) || toolLimitReached) return;
+        if (results.some((entry) => entry.reportHandled) || toolLimitReached) return;
       }
     } finally {
       clearTimeout(timer);
@@ -315,10 +318,10 @@ export class AdvisorRunner {
   async #executeToolCall(
     call: ToolCall,
     signal: AbortSignal,
-  ): Promise<{ message: ToolResultMessage; adviceHandled: boolean }> {
-    if (call.name === "advise") return this.#executeAdvise(call);
+  ): Promise<{ message: ToolResultMessage; reportHandled: boolean }> {
+    if (call.name === "report") return this.#executeReport(call);
     const tool = this.#toolMap.get(call.name);
-    if (!tool) return { message: errorToolResult(call, `Tool ${call.name} is not available`), adviceHandled: false };
+    if (!tool) return { message: errorToolResult(call, `Tool ${call.name} is not available`), reportHandled: false };
 
     try {
       const prepared = tool.prepareArguments
@@ -336,27 +339,27 @@ export class AdvisorRunner {
           isError: false,
           timestamp: Date.now(),
         },
-        adviceHandled: false,
+        reportHandled: false,
       };
     } catch (error) {
-      return { message: errorToolResult(call, errorMessage(error)), adviceHandled: false };
+      return { message: errorToolResult(call, errorMessage(error)), reportHandled: false };
     }
   }
 
-  #executeAdvise(call: ToolCall): { message: ToolResultMessage; adviceHandled: boolean } {
+  #executeReport(call: ToolCall): { message: ToolResultMessage; reportHandled: boolean } {
     try {
-      const args = validateToolArguments(adviseTool, call) as AdviseArguments;
-      const note = normalizeAdvisoryText(args.note);
-      const severity = isAdvisorSeverity(args.severity) ? args.severity : undefined;
+      const args = validateToolArguments(reportTool, call) as ReportArguments;
+      const note = normalizeMicroManagerText(args.note);
+      const severity = isMicroManagerSeverity(args.severity) ? args.severity : undefined;
       if (note && this.#guard.accept(note)) {
-        const advice: AdvisorNote = { note };
-        if (severity) advice.severity = severity;
-        if (this.#name !== "default") advice.advisor = this.#name;
-        this.#onAdvice(advice);
+        const report: MicroManagerNote = { note };
+        if (severity) report.severity = severity;
+        if (this.#name !== "default") report.manager = this.#name;
+        this.#onReport(report);
       }
-      return { message: textToolResult(call, "Recorded."), adviceHandled: true };
+      return { message: textToolResult(call, "Recorded."), reportHandled: true };
     } catch (error) {
-      return { message: errorToolResult(call, errorMessage(error)), adviceHandled: true };
+      return { message: errorToolResult(call, errorMessage(error)), reportHandled: true };
     }
   }
 
@@ -403,7 +406,7 @@ function boundToolContent(
   let remaining = maxChars;
   for (const block of content) {
     if (remaining <= 0) break;
-    const text = block.type === "text" ? block.text : "[image omitted from advisor context]";
+    const text = block.type === "text" ? block.text : "[image omitted from micro-manager context]";
     if (text.length <= remaining) {
       parts.push(text);
       remaining -= text.length;
@@ -435,7 +438,7 @@ async function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
   if (milliseconds <= 0) return;
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(finish, milliseconds);
-    const abort = (): void => finish(signal.reason instanceof Error ? signal.reason : new Error("advisor aborted"));
+    const abort = (): void => finish(signal.reason instanceof Error ? signal.reason : new Error("micro-manager aborted"));
     function finish(error?: Error): void {
       clearTimeout(timer);
       signal.removeEventListener("abort", abort);

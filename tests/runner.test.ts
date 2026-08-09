@@ -3,8 +3,8 @@ import test from "node:test";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Context, Model, ToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { AdvisorRunner, type AdvisorRunnerOptions } from "../src/advisor-runner.ts";
-import type { AdvisorNote } from "../src/types.ts";
+import { MicroManagerRunner, type MicroManagerRunnerOptions } from "../src/micro-manager-runner.ts";
+import type { MicroManagerNote } from "../src/types.ts";
 
 const MODEL: Model<"openai-responses"> = {
   id: "review-model",
@@ -45,7 +45,7 @@ function call(name: string, arguments_: Record<string, unknown>, id = `${name}-c
   return { type: "toolCall", id, name, arguments: arguments_ };
 }
 
-function baseOptions(overrides: Partial<AdvisorRunnerOptions> = {}): AdvisorRunnerOptions {
+function baseOptions(overrides: Partial<MicroManagerRunnerOptions> = {}): MicroManagerRunnerOptions {
   return {
     name: "default",
     model: MODEL,
@@ -58,14 +58,14 @@ function baseOptions(overrides: Partial<AdvisorRunnerOptions> = {}): AdvisorRunn
     maxToolRounds: 3,
     maxContextChars: 20_000,
     maxAttempts: 1,
-    onAdvice: () => {},
+    onReport: () => {},
     retryDelayMs: 0,
     ...overrides,
   };
 }
 
-test("uses read-only tools, then delivers one structured advisory", async () => {
-  const notes: AdvisorNote[] = [];
+test("uses read-only tools, then delivers one structured management note", async () => {
+  const notes: MicroManagerNote[] = [];
   let readCalls = 0;
   const readTool: AgentTool<typeof readSchema> = {
     name: "read",
@@ -79,14 +79,14 @@ test("uses read-only tools, then delivers one structured advisory", async () => 
   };
   const responses = [
     response([call("read", { path: "src/queue.ts" })]),
-    response([call("advise", { note: "Await queue.flush() before reporting completion.", severity: "concern" })]),
+    response([call("report", { note: "Await queue.flush() before reporting completion.", severity: "concern" })]),
   ];
-  const runner = new AdvisorRunner(
+  const runner = new MicroManagerRunner(
     baseOptions({
       name: "Architecture",
       tools: [readTool],
       complete: async () => responses.shift() ?? response([], "stop"),
-      onAdvice: (note) => notes.push(note),
+      onReport: (note) => notes.push(note),
     }),
   );
 
@@ -97,7 +97,7 @@ test("uses read-only tools, then delivers one structured advisory", async () => 
   assert.deepEqual(notes[0], {
     note: "Await queue.flush() before reporting completion.",
     severity: "concern",
-    advisor: "Architecture",
+    manager: "Architecture",
   });
   await waitFor(() => runner.backlog === 0);
   assert.equal(runner.stats.turns, 2);
@@ -106,12 +106,12 @@ test("uses read-only tools, then delivers one structured advisory", async () => 
   runner.dispose();
 });
 
-test("dedupes the same advisory across separate updates", async () => {
-  const notes: AdvisorNote[] = [];
-  const runner = new AdvisorRunner(
+test("dedupes the same management note across separate updates", async () => {
+  const notes: MicroManagerNote[] = [];
+  const runner = new MicroManagerRunner(
     baseOptions({
-      complete: async () => response([call("advise", { note: "Run the focused regression test.", severity: "nit" })]),
-      onAdvice: (note) => notes.push(note),
+      complete: async () => response([call("report", { note: "Run the focused regression test.", severity: "nit" })]),
+      onReport: (note) => notes.push(note),
     }),
   );
 
@@ -125,17 +125,17 @@ test("dedupes the same advisory across separate updates", async () => {
 });
 
 test("retries a clean bounded update after a provider failure", async () => {
-  const notes: AdvisorNote[] = [];
+  const notes: MicroManagerNote[] = [];
   let attempts = 0;
-  const runner = new AdvisorRunner(
+  const runner = new MicroManagerRunner(
     baseOptions({
       maxAttempts: 2,
       complete: async () => {
         attempts++;
         if (attempts === 1) throw new Error("temporary provider failure");
-        return response([call("advise", { note: "Check the fallback path.", severity: "concern" })]);
+        return response([call("report", { note: "Check the fallback path.", severity: "concern" })]);
       },
-      onAdvice: (note) => notes.push(note),
+      onReport: (note) => notes.push(note),
     }),
   );
 
@@ -148,7 +148,7 @@ test("retries a clean bounded update after a provider failure", async () => {
 
 test("bounds oversized updates and read results before the next model call", async () => {
   const contexts: Context[] = [];
-  const notes: AdvisorNote[] = [];
+  const notes: MicroManagerNote[] = [];
   const readTool: AgentTool<typeof readSchema> = {
     name: "read",
     label: "Read",
@@ -160,9 +160,9 @@ test("bounds oversized updates and read results before the next model call", asy
   };
   const responses = [
     response([call("read", { path: "large.txt" })]),
-    response([call("advise", { note: "The large file needs a focused parser.", severity: "nit" })]),
+    response([call("report", { note: "The large file needs a focused parser.", severity: "nit" })]),
   ];
-  const runner = new AdvisorRunner(
+  const runner = new MicroManagerRunner(
     baseOptions({
       tools: [readTool],
       maxContextChars: 8_000,
@@ -171,7 +171,7 @@ test("bounds oversized updates and read results before the next model call", asy
         contexts.push(context);
         return responses.shift() ?? response([], "stop");
       },
-      onAdvice: (note) => notes.push(note),
+      onReport: (note) => notes.push(note),
     }),
   );
 
@@ -182,6 +182,34 @@ test("bounds oversized updates and read results before the next model call", asy
   assert.ok(JSON.stringify(firstUser).length < 4_500);
   const toolResult = contexts[1]?.messages.find((message) => message.role === "toolResult");
   assert.ok(JSON.stringify(toolResult).length < 1_000);
+  runner.dispose();
+});
+
+test("resets before serialized message overhead can silently drop an update", async () => {
+  const maxContextChars = 8_000;
+  const contexts: Context[] = [];
+  const returned: AssistantMessage[] = [];
+  const runner = new MicroManagerRunner(
+    baseOptions({
+      maxContextChars,
+      complete: async (_model, context) => {
+        contexts.push(context);
+        const result = response([], "stop");
+        returned.push(result);
+        return result;
+      },
+    }),
+  );
+
+  runner.enqueue("a".repeat(3_700));
+  await waitFor(() => runner.backlog === 0);
+  const priorChars = JSON.stringify([...(contexts[0]?.messages ?? []), returned[0]]).length;
+  const remaining = maxContextChars - priorChars;
+  assert.ok(remaining >= 1_000 && remaining <= maxContextChars / 2);
+
+  runner.enqueue("b".repeat(remaining));
+  await waitFor(() => runner.backlog === 0);
+  assert.equal(contexts.length, 2);
   runner.dispose();
 });
 
@@ -197,7 +225,7 @@ test("does not execute investigative tools after the configured tool-round limit
       return { content: [{ type: "text", text: "unexpected" }], details: {} };
     },
   };
-  const runner = new AdvisorRunner(
+  const runner = new MicroManagerRunner(
     baseOptions({
       tools: [readTool],
       maxToolRounds: 0,
@@ -212,8 +240,8 @@ test("does not execute investigative tools after the configured tool-round limit
   runner.dispose();
 });
 
-test("reports a provider-originated abort as an advisor error", async () => {
-  const runner = new AdvisorRunner(
+test("reports a provider-originated abort as a micro-manager error", async () => {
+  const runner = new MicroManagerRunner(
     baseOptions({ complete: async () => ({ ...response([], "aborted"), errorMessage: "provider cancelled" }) }),
   );
 
@@ -225,7 +253,7 @@ test("reports a provider-originated abort as an advisor error", async () => {
 
 test("dispose aborts an in-flight provider request without reporting an error", async () => {
   let observedSignal: AbortSignal | undefined;
-  const runner = new AdvisorRunner(
+  const runner = new MicroManagerRunner(
     baseOptions({
       complete: async (_model, _context, options) => {
         observedSignal = options?.signal;

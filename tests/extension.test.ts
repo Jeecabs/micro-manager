@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerAdvisorExtension } from "../src/extension.ts";
-import type { AdvisorConfiguration, AdvisorSeverity } from "../src/types.ts";
+import { registerMicroManagerExtension } from "../src/extension.ts";
+import type { MicroManagerConfiguration, MicroManagerSeverity } from "../src/types.ts";
 
 const MODEL: Model<"openai-responses"> = {
   id: "primary-model",
@@ -18,7 +18,7 @@ const MODEL: Model<"openai-responses"> = {
   maxTokens: 4_096,
 };
 
-function configuration(enabled = true): AdvisorConfiguration {
+function configuration(enabled = true): MicroManagerConfiguration {
   return {
     settings: {
       enabled,
@@ -32,23 +32,23 @@ function configuration(enabled = true): AdvisorConfiguration {
       maxAttempts: 1,
       immuneTurns: 3,
     },
-    advisors: [],
-    watchdogBlocks: [],
-    sources: ["/test/WATCHDOG.yml"],
+    managers: [],
+    priorityBlocks: [],
+    sources: ["/test/MICRO_MANAGER.yml"],
     errors: [],
     projectConfigDetected: false,
     projectConfigLoaded: false,
   };
 }
 
-function advisorResponse(note: string, severity: AdvisorSeverity): AssistantMessage {
+function microManagerResponse(note: string, severity: MicroManagerSeverity): AssistantMessage {
   return {
     role: "assistant",
     content: [
       {
         type: "toolCall",
-        id: `advise-${severity}`,
-        name: "advise",
+        id: `report-${severity}`,
+        name: "report",
         arguments: { note, severity },
       },
     ],
@@ -81,7 +81,10 @@ async function createHarness(options: {
 } = {}) {
   const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
   const commands = new Map<string, any>();
+  const flags = new Map<string, any>();
+  const renderers = new Map<string, any>();
   const sendCalls: Array<{ message: any; options: any }> = [];
+  const appendCalls: Array<{ customType: string; data: any }> = [];
   const statuses: Array<string | undefined> = [];
   const notifications: Array<{ message: string; type: string | undefined }> = [];
   const branch: any[] = [
@@ -102,16 +105,23 @@ async function createHarness(options: {
     on(name: string, handler: (event: any, ctx: any) => any) {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
     },
-    registerFlag() {},
+    registerFlag(name: string, flag: any) {
+      flags.set(name, flag);
+    },
     getFlag() {
       return false;
     },
-    registerMessageRenderer() {},
+    registerMessageRenderer(name: string, renderer: any) {
+      renderers.set(name, renderer);
+    },
     registerCommand(name: string, command: any) {
       commands.set(name, command);
     },
     sendMessage(message: any, sendOptions?: any) {
       sendCalls.push({ message, options: sendOptions });
+    },
+    appendEntry(customType: string, data: any) {
+      appendCalls.push({ customType, data });
     },
   });
 
@@ -139,14 +149,14 @@ async function createHarness(options: {
       complete: async () => {
         completeCalls++;
         if (options.completeDelayMs) await new Promise((resolve) => setTimeout(resolve, options.completeDelayMs));
-        return queuedResponses.shift() ?? options.response ?? advisorResponse("Check the focused test.", "concern");
+        return queuedResponses.shift() ?? options.response ?? microManagerResponse("Check the focused test.", "concern");
       },
     },
     isProjectTrusted: () => true,
     isIdle: () => idle,
   };
 
-  registerAdvisorExtension(pi, {
+  registerMicroManagerExtension(pi, {
     discoverConfig: async (discovery) => {
       discoveryIncludeProject = discovery.includeProject;
       return configuration(options.enabled ?? true);
@@ -163,12 +173,15 @@ async function createHarness(options: {
   await handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
 
   return {
+    appendCalls,
     branch,
     commands,
     ctx,
     discoveryIncludeProject: () => discoveryIncludeProject,
+    flags,
     handlers,
     notifications,
+    renderers,
     sendCalls,
     setIdle(value: boolean) {
       idle = value;
@@ -179,8 +192,15 @@ async function createHarness(options: {
   };
 }
 
+test("registers the complete Micro Manager public surface", async () => {
+  const h = await createHarness();
+  assert.deepEqual([...h.commands.keys()], ["micro-manager"]);
+  assert.deepEqual([...h.flags.keys()], ["micro-manager"]);
+  assert.deepEqual([...h.renderers.keys()], ["micro-manager"]);
+});
+
 test("reviews turn asynchronously and preserves a late concern without waking the agent", async () => {
-  const h = await createHarness({ response: advisorResponse("Escape <unsafe> output.", "concern") });
+  const h = await createHarness({ response: microManagerResponse("Escape <unsafe> output.", "concern") });
   const result = h.handlers.get("turn_end")?.[0]?.({ turnIndex: 1 }, h.ctx);
   assert.equal(result, undefined);
   await waitFor(() => h.sendCalls.length === 1);
@@ -194,7 +214,7 @@ test("reviews turn asynchronously and preserves a late concern without waking th
 });
 
 test("steers a blocker into a live primary run", async () => {
-  const h = await createHarness({ idle: false, response: advisorResponse("The migration is deleting live data.", "blocker") });
+  const h = await createHarness({ idle: false, response: microManagerResponse("The migration is deleting live data.", "blocker") });
   h.handlers.get("turn_end")?.[0]?.({ turnIndex: 2 }, h.ctx);
   await waitFor(() => h.sendCalls.length === 1);
 
@@ -203,7 +223,7 @@ test("steers a blocker into a live primary run", async () => {
 
 test("counts interruption immunity across agent runs whose turn indexes restart", async () => {
   const notes = ["first", "second", "third", "fourth", "fifth"].map((note) =>
-    advisorResponse(`${note} blocker`, "blocker"),
+    microManagerResponse(`${note} blocker`, "blocker"),
   );
   const h = await createHarness({ idle: false, responses: notes });
 
@@ -230,7 +250,7 @@ test("counts interruption immunity across agent runs whose turn indexes restart"
 
 test("manual enable seeds existing history and reviews only later entries", async () => {
   const h = await createHarness({ enabled: false });
-  await h.commands.get("advisor").handler("on", h.ctx);
+  await h.commands.get("micro-manager").handler("on", h.ctx);
   h.handlers.get("turn_end")?.[0]?.({ turnIndex: 1 }, h.ctx);
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(h.completeCalls(), 0);
@@ -244,19 +264,36 @@ test("manual enable seeds existing history and reviews only later entries", asyn
   await waitFor(() => h.completeCalls() === 1);
 });
 
-test("headless settlement waits for final review without starting a hidden blocker turn", async () => {
+test("buffers active JSON reports until settlement without starting a hidden turn", async () => {
+  const h = await createHarness({
+    mode: "json",
+    idle: false,
+    response: microManagerResponse("The final output is invalid.", "blocker"),
+  });
+  h.handlers.get("turn_end")?.[0]?.({ turnIndex: 1 }, h.ctx);
+  await waitFor(() => h.completeCalls() === 1);
+  assert.equal(h.sendCalls.length, 0);
+
+  await h.handlers.get("agent_settled")?.[0]?.({}, h.ctx);
+  assert.equal(h.sendCalls.length, 1);
+  assert.equal(h.sendCalls[0]?.options, undefined);
+});
+
+test("headless settlement waits for final review without replacing print output", async () => {
   const h = await createHarness({
     mode: "print",
     completeDelayMs: 25,
-    response: advisorResponse("The final output is invalid.", "blocker"),
+    response: microManagerResponse("The final output is invalid.", "blocker"),
   });
   h.handlers.get("turn_end")?.[0]?.({ turnIndex: 1 }, h.ctx);
   const started = Date.now();
   await h.handlers.get("agent_settled")?.[0]?.({}, h.ctx);
 
   assert.ok(Date.now() - started >= 15);
-  assert.equal(h.sendCalls.length, 1);
-  assert.equal(h.sendCalls[0]?.options, undefined);
+  assert.equal(h.sendCalls.length, 0);
+  assert.equal(h.appendCalls.length, 1);
+  assert.equal(h.appendCalls[0]?.customType, "micro-manager-report");
+  assert.equal(h.appendCalls[0]?.data.details.notes[0]?.note, "The final output is invalid.");
 });
 
 test("asks before loading root project config when Pi otherwise auto-trusts the directory", async () => {
