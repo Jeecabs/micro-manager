@@ -3,19 +3,22 @@ import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { parseDocument } from "yaml";
+import { normalizeMicroManagerText } from "./message-format.ts";
 import {
-  ADVISOR_TOOL_NAMES,
-  type AdvisorConfiguration,
-  type AdvisorDefinition,
-  type AdvisorSettings,
-  type AdvisorToolName,
+  MICRO_MANAGER_TOOL_NAMES,
+  type MicroManagerConfiguration,
+  type MicroManagerDefinition,
+  type MicroManagerSettings,
+  type MicroManagerToolName,
 } from "./types.ts";
 
 const MAX_CONFIG_BYTES = 64 * 1024;
-const DEFAULT_SETTINGS: AdvisorSettings = {
+const MAX_MANAGERS = 8;
+const MAX_MANAGER_NAME_CHARS = 80;
+const DEFAULT_SETTINGS: MicroManagerSettings = {
   enabled: false,
   thinking: "low",
-  tools: [...ADVISOR_TOOL_NAMES],
+  tools: [...MICRO_MANAGER_TOOL_NAMES],
   timeoutMs: 30_000,
   maxInputChars: 24_000,
   maxOutputTokens: 512,
@@ -38,11 +41,11 @@ const TOP_LEVEL_KEYS = new Set([
   "max_attempts",
   "immune_turns",
   "instructions",
-  "advisors",
+  "managers",
 ]);
-const ADVISOR_KEYS = new Set(["name", "enabled", "model", "thinking", "tools", "instructions"]);
+const MICRO_MANAGER_KEYS = new Set(["name", "enabled", "model", "thinking", "tools", "instructions"]);
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-const TOOL_ALIASES = new Map<string, AdvisorToolName>([
+const TOOL_ALIASES = new Map<string, MicroManagerToolName>([
   ["read", "read"],
   ["grep", "grep"],
   ["search", "grep"],
@@ -61,7 +64,7 @@ interface PartialSettings {
   enabled?: boolean;
   model?: string;
   thinking?: ThinkingLevel;
-  tools?: AdvisorToolName[];
+  tools?: MicroManagerToolName[];
   timeoutMs?: number;
   maxInputChars?: number;
   maxOutputTokens?: number;
@@ -71,36 +74,36 @@ interface PartialSettings {
   immuneTurns?: number;
 }
 
-interface ParsedAdvisor {
+interface ParsedMicroManager {
   name: string;
   enabled?: boolean;
   model?: string;
   thinking?: ThinkingLevel;
-  tools?: AdvisorToolName[];
+  tools?: MicroManagerToolName[];
   instructions?: string;
 }
 
 interface ParsedYaml {
   settings: PartialSettings;
   instructions?: string;
-  advisors: ParsedAdvisor[];
+  managers: ParsedMicroManager[];
 }
 
-export interface AdvisorConfigDiscoveryOptions {
+export interface MicroManagerConfigDiscoveryOptions {
   cwd: string;
   agentDir: string;
   includeProject: boolean;
   configDirName?: string;
 }
 
-export async function hasProjectAdvisorCandidate(
+export async function hasProjectMicroManagerCandidate(
   cwd: string,
   configDirName = CONFIG_DIR_NAME,
 ): Promise<boolean> {
   const dirs = await projectDirectories(cwd);
   for (const dir of dirs) {
     for (const location of [dir, path.join(dir, configDirName)]) {
-      for (const filename of ["WATCHDOG.yml", "WATCHDOG.yaml", "WATCHDOG.md"]) {
+      for (const filename of ["MICRO_MANAGER.yml", "MICRO_MANAGER.yaml", "MICRO_MANAGER.md"]) {
         if (await pathExists(path.join(location, filename))) return true;
       }
     }
@@ -108,16 +111,16 @@ export async function hasProjectAdvisorCandidate(
   return false;
 }
 
-export async function discoverAdvisorConfiguration(
-  options: AdvisorConfigDiscoveryOptions,
-): Promise<AdvisorConfiguration> {
+export async function discoverMicroManagerConfiguration(
+  options: MicroManagerConfigDiscoveryOptions,
+): Promise<MicroManagerConfiguration> {
   const configDirName = options.configDirName ?? CONFIG_DIR_NAME;
-  const projectConfigDetected = await hasProjectAdvisorCandidate(options.cwd, configDirName);
+  const projectConfigDetected = await hasProjectMicroManagerCandidate(options.cwd, configDirName);
   const candidates = await collectCandidates(options.cwd, options.agentDir, options.includeProject, configDirName);
   const settingsPatch: PartialSettings = {};
-  const advisorMap = new Map<string, ParsedAdvisor>();
+  const managerMap = new Map<string, ParsedMicroManager>();
   const sharedInstructions: string[] = [];
-  const watchdogBlocks: string[] = [];
+  const priorityBlocks: string[] = [];
   const sources: string[] = [];
   const errors: string[] = [];
   let projectConfigLoaded = false;
@@ -128,28 +131,29 @@ export async function discoverAdvisorConfiguration(
       sources.push(candidate.path);
       if (candidate.level === "project") projectConfigLoaded = true;
       if (candidate.kind === "markdown") {
-        const body = content.trim();
-        if (body) {
-          watchdogBlocks.push(`Especially pay attention to:\n<attention>\n${body}\n</attention>`);
-        }
+        appendPriorityBlock(content, priorityBlocks);
         continue;
       }
 
       const parsed = parseConfigYaml(content, candidate.path);
       Object.assign(settingsPatch, parsed.settings);
       if (parsed.instructions) sharedInstructions.push(parsed.instructions);
-      for (const advisor of parsed.advisors) advisorMap.set(slugifyAdvisorName(advisor.name), advisor);
+      for (const manager of parsed.managers) {
+        const slug = slugifyMicroManagerName(manager.name);
+        managerMap.delete(slug);
+        managerMap.set(slug, manager);
+      }
     } catch (error) {
       errors.push(`${candidate.path}: ${errorMessage(error)}`);
     }
   }
 
   const settings = mergeSettings(settingsPatch);
-  const advisors = [...advisorMap.values()].map((advisor) => materializeAdvisor(advisor, settings));
-  const result: AdvisorConfiguration = {
+  const managers = materializeManagers(managerMap, settings, errors);
+  const result: MicroManagerConfiguration = {
     settings,
-    advisors,
-    watchdogBlocks,
+    managers,
+    priorityBlocks,
     sources,
     errors,
     projectConfigDetected,
@@ -160,11 +164,11 @@ export async function discoverAdvisorConfiguration(
   return result;
 }
 
-export function parseConfigYaml(content: string, source = "WATCHDOG.yml"): ParsedYaml {
+export function parseConfigYaml(content: string, source = "MICRO_MANAGER.yml"): ParsedYaml {
   const document = parseDocument(content, { prettyErrors: true, strict: true, uniqueKeys: true });
   if (document.errors.length > 0) throw new Error(document.errors.map((error) => error.message).join("; "));
   const value: unknown = document.toJS({ maxAliasCount: 20 });
-  if (value === null || value === undefined) return { settings: {}, advisors: [] };
+  if (value === null || value === undefined) return { settings: {}, managers: [] };
   if (!isRecord(value)) throw new Error("expected a YAML mapping");
   assertKnownKeys(value, TOP_LEVEL_KEYS, source);
 
@@ -189,53 +193,73 @@ export function parseConfigYaml(content: string, source = "WATCHDOG.yml"): Parse
   if ("max_attempts" in value) settings.maxAttempts = integerValue(value.max_attempts, "max_attempts", 1, 3);
   if ("immune_turns" in value) settings.immuneTurns = integerValue(value.immune_turns, "immune_turns", 0, 20);
 
-  const result: ParsedYaml = { settings, advisors: [] };
+  const result: ParsedYaml = { settings, managers: [] };
   if ("instructions" in value) result.instructions = nonEmptyString(value.instructions, "instructions");
-  if ("advisors" in value) {
-    if (!Array.isArray(value.advisors)) throw new Error("advisors must be an array");
-    result.advisors = value.advisors.map((entry, index) => parseAdvisor(entry, index));
+  if ("managers" in value) {
+    if (!Array.isArray(value.managers)) throw new Error("managers must be an array");
+    if (value.managers.length > MAX_MANAGERS) throw new Error(`managers must contain at most ${MAX_MANAGERS} entries`);
+    result.managers = value.managers.map((entry, index) => parseMicroManager(entry, index));
   }
   return result;
 }
 
-export function slugifyAdvisorName(name: string): string {
+export function slugifyMicroManagerName(name: string): string {
   const slug = name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return slug || "advisor";
+  return slug || "micro-manager";
 }
 
-function parseAdvisor(value: unknown, index: number): ParsedAdvisor {
-  const field = `advisors[${index}]`;
+function parseMicroManager(value: unknown, index: number): ParsedMicroManager {
+  const field = `managers[${index}]`;
   if (!isRecord(value)) throw new Error(`${field} must be a mapping`);
-  assertKnownKeys(value, ADVISOR_KEYS, field);
-  const advisor: ParsedAdvisor = { name: nonEmptyString(value.name, `${field}.name`) };
-  if ("enabled" in value) advisor.enabled = booleanValue(value.enabled, `${field}.enabled`);
-  if ("model" in value) advisor.model = nonEmptyString(value.model, `${field}.model`);
-  if ("thinking" in value) advisor.thinking = thinkingValue(value.thinking, `${field}.thinking`);
-  if ("tools" in value) advisor.tools = toolsValue(value.tools, `${field}.tools`);
+  assertKnownKeys(value, MICRO_MANAGER_KEYS, field);
+  const manager: ParsedMicroManager = { name: managerName(value.name, `${field}.name`) };
+  if ("enabled" in value) manager.enabled = booleanValue(value.enabled, `${field}.enabled`);
+  if ("model" in value) manager.model = nonEmptyString(value.model, `${field}.model`);
+  if ("thinking" in value) manager.thinking = thinkingValue(value.thinking, `${field}.thinking`);
+  if ("tools" in value) manager.tools = toolsValue(value.tools, `${field}.tools`);
   if ("instructions" in value) {
-    advisor.instructions = nonEmptyString(value.instructions, `${field}.instructions`);
+    manager.instructions = nonEmptyString(value.instructions, `${field}.instructions`);
   }
-  return advisor;
+  return manager;
 }
 
-function materializeAdvisor(advisor: ParsedAdvisor, settings: AdvisorSettings): AdvisorDefinition {
-  const result: AdvisorDefinition = {
-    name: advisor.name,
-    enabled: advisor.enabled ?? true,
-    thinking: advisor.thinking ?? settings.thinking,
-    tools: [...(advisor.tools ?? settings.tools)],
+function appendPriorityBlock(content: string, blocks: string[]): void {
+  const body = content.trim();
+  if (body) blocks.push(`Especially pay attention to:\n<attention>\n${body}\n</attention>`);
+}
+
+function materializeManagers(
+  managerMap: ReadonlyMap<string, ParsedMicroManager>,
+  settings: MicroManagerSettings,
+  errors: string[],
+): MicroManagerDefinition[] {
+  const configured = [...managerMap.values()];
+  if (configured.length > MAX_MANAGERS) {
+    errors.push(
+      `configuration defines ${configured.length} managers; only the ${MAX_MANAGERS} most specific are active`,
+    );
+  }
+  return configured.slice(-MAX_MANAGERS).map((manager) => materializeMicroManager(manager, settings));
+}
+
+function materializeMicroManager(manager: ParsedMicroManager, settings: MicroManagerSettings): MicroManagerDefinition {
+  const result: MicroManagerDefinition = {
+    name: manager.name,
+    enabled: manager.enabled ?? true,
+    thinking: manager.thinking ?? settings.thinking,
+    tools: [...(manager.tools ?? settings.tools)],
   };
-  const model = advisor.model ?? settings.model;
+  const model = manager.model ?? settings.model;
   if (model) result.model = model;
-  if (advisor.instructions) result.instructions = advisor.instructions;
+  if (manager.instructions) result.instructions = manager.instructions;
   return result;
 }
 
-function mergeSettings(patch: PartialSettings): AdvisorSettings {
-  const settings: AdvisorSettings = {
+function mergeSettings(patch: PartialSettings): MicroManagerSettings {
+  const settings: MicroManagerSettings = {
     ...DEFAULT_SETTINGS,
     ...patch,
     tools: [...(patch.tools ?? DEFAULT_SETTINGS.tools)],
@@ -267,12 +291,12 @@ async function appendLocationCandidates(
   location: string,
   level: ConfigCandidate["level"],
 ): Promise<void> {
-  const yml = path.join(location, "WATCHDOG.yml");
-  const yaml = path.join(location, "WATCHDOG.yaml");
+  const yml = path.join(location, "MICRO_MANAGER.yml");
+  const yaml = path.join(location, "MICRO_MANAGER.yaml");
   if (await pathExists(yml)) candidates.push({ path: yml, level, kind: "yaml" });
   else if (await pathExists(yaml)) candidates.push({ path: yaml, level, kind: "yaml" });
 
-  const markdown = path.join(location, "WATCHDOG.md");
+  const markdown = path.join(location, "MICRO_MANAGER.md");
   if (await pathExists(markdown)) candidates.push({ path: markdown, level, kind: "markdown" });
 }
 
@@ -311,13 +335,13 @@ function assertKnownKeys(value: Record<string, unknown>, allowed: ReadonlySet<st
   if (unknown.length > 0) throw new Error(`${field} contains unknown ${unknown.length === 1 ? "key" : "keys"}: ${unknown.join(", ")}`);
 }
 
-function toolsValue(value: unknown, field: string): AdvisorToolName[] {
+function toolsValue(value: unknown, field: string): MicroManagerToolName[] {
   if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
-  const tools: AdvisorToolName[] = [];
+  const tools: MicroManagerToolName[] = [];
   for (const [index, item] of value.entries()) {
     if (typeof item !== "string") throw new Error(`${field}[${index}] must be a string`);
     const normalized = TOOL_ALIASES.get(item.trim().toLowerCase());
-    if (!normalized) throw new Error(`${field}[${index}] is not a read-only advisor tool: ${item}`);
+    if (!normalized) throw new Error(`${field}[${index}] is not a read-only micro-manager tool: ${item}`);
     if (!tools.includes(normalized)) tools.push(normalized);
   }
   return tools;
@@ -333,6 +357,17 @@ function thinkingValue(value: unknown, field: string): ThinkingLevel {
 function booleanValue(value: unknown, field: string): boolean {
   if (typeof value !== "boolean") throw new Error(`${field} must be a boolean`);
   return value;
+}
+
+function managerName(value: unknown, field: string): string {
+  const name = nonEmptyString(value, field);
+  if (name.length > MAX_MANAGER_NAME_CHARS) {
+    throw new Error(`${field} must contain at most ${MAX_MANAGER_NAME_CHARS} characters`);
+  }
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(name) || normalizeMicroManagerText(name) !== name) {
+    throw new Error(`${field} contains unsupported control or formatting characters`);
+  }
+  return name;
 }
 
 function nonEmptyString(value: unknown, field: string): string {

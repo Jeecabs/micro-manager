@@ -1,8 +1,8 @@
-import type { AdvisorMessageDetails, AdvisorNote, AdvisorSeverity } from "./types.ts";
+import type { MicroManagerMessageDetails, MicroManagerNote, MicroManagerSeverity } from "./types.ts";
 
-const ADVISOR_GUIDANCE = "weigh, don't blindly obey";
+const MICRO_MANAGER_GUIDANCE = "weigh, don't blindly obey";
 
-export function normalizeAdvisoryText(value: string): string | undefined {
+export function normalizeMicroManagerText(value: string): string | undefined {
   const normalized = value
     .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
@@ -14,25 +14,25 @@ export function normalizeAdvisoryText(value: string): string | undefined {
   return normalized || undefined;
 }
 
-export function isAdvisorSeverity(value: unknown): value is AdvisorSeverity {
+export function isMicroManagerSeverity(value: unknown): value is MicroManagerSeverity {
   return value === "nit" || value === "concern" || value === "blocker";
 }
 
-export function isInterruptingSeverity(severity: AdvisorSeverity | undefined): boolean {
+export function isInterruptingSeverity(severity: MicroManagerSeverity | undefined): boolean {
   return severity === "concern" || severity === "blocker";
 }
 
-export function formatAdvisorBatchContent(notes: readonly AdvisorNote[]): string {
+export function formatMicroManagerBatchContent(notes: readonly MicroManagerNote[]): string {
   return notes
     .map((entry) => {
-      const advisor = entry.advisor ? ` advisor="${escapeXml(entry.advisor)}"` : "";
+      const manager = entry.manager ? ` manager="${escapeXml(entry.manager)}"` : "";
       const severity = entry.severity ? ` severity="${entry.severity}"` : "";
-      return `<advisory${advisor}${severity} guidance="${ADVISOR_GUIDANCE}">\n${escapeXml(entry.note)}\n</advisory>`;
+      return `<micro-manager-note${manager}${severity} guidance="${MICRO_MANAGER_GUIDANCE}">\n${escapeXml(entry.note)}\n</micro-manager-note>`;
     })
     .join("\n");
 }
 
-export function advisorMessageDetails(notes: readonly AdvisorNote[]): AdvisorMessageDetails {
+export function microManagerMessageDetails(notes: readonly MicroManagerNote[]): MicroManagerMessageDetails {
   return { notes: [...notes] };
 }
 

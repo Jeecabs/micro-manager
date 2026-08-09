@@ -38,12 +38,12 @@ const entries = [
   },
   {
     type: "message",
-    id: "advisor-1",
-    message: { role: "custom", customType: "advisor", content: "Do not recurse." },
+    id: "manager-1",
+    message: { role: "custom", customType: "micro-manager", content: "Do not recurse." },
   },
 ];
 
-test("renders useful transcript evidence while omitting thinking and prior advice", () => {
+test("renders useful transcript evidence while omitting thinking and prior report", () => {
   const excerpt = buildTranscriptExcerpt(entries, 20_000) ?? "";
   assert.match(excerpt, /Fix the queue/);
   assert.match(excerpt, /src\/queue\.ts/);

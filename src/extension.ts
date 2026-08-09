@@ -2,10 +2,6 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
   CONFIG_DIR_NAME,
-  createFindTool,
-  createGrepTool,
-  createLsTool,
-  createReadTool,
   getAgentDir,
   hasTrustRequiringProjectResources,
   ProjectTrustStore,
@@ -13,29 +9,29 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
-  advisorMessageDetails,
-  formatAdvisorBatchContent,
+  microManagerMessageDetails,
+  formatMicroManagerBatchContent,
   isInterruptingSeverity,
-} from "./advisory-format.ts";
-import { AdvisorRunner, type AdvisorRunnerOptions } from "./advisor-runner.ts";
+} from "./message-format.ts";
+import { MicroManagerRunner, type MicroManagerRunnerOptions } from "./micro-manager-runner.ts";
 import {
-  discoverAdvisorConfiguration,
-  hasProjectAdvisorCandidate,
-  type AdvisorConfigDiscoveryOptions,
+  discoverMicroManagerConfiguration,
+  hasProjectMicroManagerCandidate,
+  type MicroManagerConfigDiscoveryOptions,
 } from "./config.ts";
-import { buildAdvisorSystemPrompt } from "./prompt.ts";
-import { renderAdvisorMessage } from "./renderer.ts";
+import { buildMicroManagerSystemPrompt } from "./prompt.ts";
+import { renderMicroManagerMessage } from "./renderer.ts";
 import { TranscriptCursor } from "./transcript.ts";
+import { createWorkspaceTools } from "./workspace-tools.ts";
 import type {
-  AdvisorConfiguration,
-  AdvisorDefinition,
-  AdvisorNote,
-  AdvisorRuntimeStats,
-  AdvisorToolName,
+  MicroManagerConfiguration,
+  MicroManagerDefinition,
+  MicroManagerNote,
+  MicroManagerRuntimeStats,
 } from "./types.ts";
 
-const STATUS_KEY = "advisor";
-const COMMAND_USAGE = "/advisor [on|off|status|reload|dump|config]";
+const STATUS_KEY = "micro-manager";
+const COMMAND_USAGE = "/micro-manager [on|off|status|reload|dump|config]";
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 interface ProjectTrustAccess {
@@ -45,15 +41,15 @@ interface ProjectTrustAccess {
   hasProjectCandidate(cwd: string, configDirName: string): Promise<boolean>;
 }
 
-export interface AdvisorExtensionDependencies {
-  discoverConfig?(options: AdvisorConfigDiscoveryOptions): Promise<AdvisorConfiguration>;
-  createRunner?(options: AdvisorRunnerOptions): AdvisorRunner;
+export interface MicroManagerExtensionDependencies {
+  discoverConfig?(options: MicroManagerConfigDiscoveryOptions): Promise<MicroManagerConfiguration>;
+  createRunner?(options: MicroManagerRunnerOptions): MicroManagerRunner;
   trust?: ProjectTrustAccess;
 }
 
-export function registerAdvisorExtension(
+export function registerMicroManagerExtension(
   pi: ExtensionAPI,
-  dependencies: AdvisorExtensionDependencies = {},
+  dependencies: MicroManagerExtensionDependencies = {},
 ): void {
   const agentDir = getAgentDir();
   const trustStore = dependencies.trust ? undefined : new ProjectTrustStore(agentDir);
@@ -63,31 +59,32 @@ export function registerAdvisorExtension(
       hasStandardResources: hasTrustRequiringProjectResources,
       getSavedDecision: (cwd) => trustStore!.get(cwd),
       rememberDecision: (cwd, decision) => trustStore!.set(cwd, decision),
-      hasProjectCandidate: hasProjectAdvisorCandidate,
+      hasProjectCandidate: hasProjectMicroManagerCandidate,
     };
-  const discoverConfig = dependencies.discoverConfig ?? discoverAdvisorConfiguration;
-  const createRunner = dependencies.createRunner ?? ((options: AdvisorRunnerOptions) => new AdvisorRunner(options));
+  const discoverConfig = dependencies.discoverConfig ?? discoverMicroManagerConfiguration;
+  const createRunner = dependencies.createRunner ?? ((options: MicroManagerRunnerOptions) => new MicroManagerRunner(options));
   const cursor = new TranscriptCursor();
-  let configuration: AdvisorConfiguration | undefined;
-  let runners: AdvisorRunner[] = [];
-  let inactiveStats: AdvisorRuntimeStats[] = [];
+  let configuration: MicroManagerConfiguration | undefined;
+  let runners: MicroManagerRunner[] = [];
+  let inactiveStats: MicroManagerRuntimeStats[] = [];
   let sessionOverride: boolean | undefined;
   let sessionEpoch = 0;
   let completedTurns = 0;
   let immuneTurnStart: number | undefined;
   let deliveredNotes = 0;
+  let pendingHeadlessNotes: MicroManagerNote[] = [];
   let activeContext: ExtensionContext | undefined;
 
-  pi.registerFlag("advisor", {
-    description: "Enable standalone advisor review for this process",
+  pi.registerFlag("micro-manager", {
+    description: "Enable The Micro Manager for this process",
     type: "boolean",
     default: false,
   });
 
-  pi.registerMessageRenderer("advisor", renderAdvisorMessage);
+  pi.registerMessageRenderer("micro-manager", renderMicroManagerMessage);
 
-  pi.registerCommand("advisor", {
-    description: "Inspect or control background advisor review",
+  pi.registerCommand("micro-manager", {
+    description: "Inspect or control The Micro Manager",
     getArgumentCompletions: (prefix) => {
       const values = ["on", "off", "status", "reload", "dump", "config"];
       const matches = values.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
@@ -104,7 +101,7 @@ export function registerAdvisorExtension(
         rebuildRunners(ctx, true);
         outputCommandText(
           ctx,
-          runners.length > 0 ? "advisor enabled" : "advisor enabled, but no model resolved",
+          runners.length > 0 ? "micro-manager enabled" : "micro-manager enabled, but no model resolved",
           runners.length > 0 ? "info" : "warning",
         );
         return;
@@ -113,7 +110,7 @@ export function registerAdvisorExtension(
         sessionOverride = false;
         stopRunners();
         refreshStatus(ctx);
-        outputCommandText(ctx, "advisor disabled for this session", "info");
+        outputCommandText(ctx, "micro-manager disabled for this session", "info");
         return;
       }
       if (action === "reload") {
@@ -121,15 +118,18 @@ export function registerAdvisorExtension(
         rebuildRunners(ctx, true);
         outputCommandText(
           ctx,
-          configuration?.errors.length ? "advisor config reloaded with warnings" : "advisor config reloaded",
+          configuration?.errors.length ? "micro-manager config reloaded with warnings" : "micro-manager config reloaded",
           configuration?.errors.length ? "warning" : "info",
         );
         return;
       }
       if (action === "dump") {
         const dump = runners.map((runner) => `# ${runner.stats.name}\n\n${runner.dump() || "(empty)"}`).join("\n\n---\n\n");
-        if (ctx.mode === "tui") await ctx.ui.editor("Advisor transcript", dump || "(advisor transcript is empty)");
-        else outputCommandText(ctx, dump || "advisor transcript is empty", "info");
+        if (ctx.mode === "tui") {
+          await ctx.ui.editor("The Micro Manager transcript", dump || "(micro-manager transcript is empty)");
+        } else {
+          outputCommandText(ctx, dump || "micro-manager transcript is empty", "info");
+        }
         return;
       }
       if (action === "config" || action === "configure") {
@@ -159,10 +159,11 @@ export function registerAdvisorExtension(
   pi.on("session_start", async (event, ctx) => {
     const expectedEpoch = ++sessionEpoch;
     activeContext = ctx;
-    sessionOverride = pi.getFlag("advisor") === true ? true : undefined;
+    sessionOverride = pi.getFlag("micro-manager") === true ? true : undefined;
     completedTurns = 0;
     immuneTurnStart = undefined;
     deliveredNotes = 0;
+    pendingHeadlessNotes = [];
     cursor.reset();
     if (!(await loadConfiguration(ctx, true, expectedEpoch))) return;
     rebuildRunners(ctx, event.reason === "reload");
@@ -185,6 +186,7 @@ export function registerAdvisorExtension(
       (configuration?.settings.timeoutMs ?? 30_000) * (configuration?.settings.maxAttempts ?? 1),
     );
     await Promise.all(runners.map((runner) => runner.waitForIdle(timeoutMs)));
+    flushHeadlessNotes(ctx);
   });
 
   pi.on("session_compact", (_event, ctx) => resetConversation(ctx));
@@ -198,6 +200,7 @@ export function registerAdvisorExtension(
   pi.on("session_shutdown", (_event, ctx) => {
     sessionEpoch++;
     activeContext = undefined;
+    pendingHeadlessNotes = [];
     stopRunners();
     cursor.reset();
     if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -208,11 +211,12 @@ export function registerAdvisorExtension(
       ctx.ui.notify(text, type);
       return;
     }
-    pi.sendMessage({ customType: "advisor-status", content: text, display: true });
+    pi.sendMessage({ customType: "micro-manager-status", content: text, display: true });
   }
 
   function resetConversation(ctx: ExtensionContext): void {
     cursor.reset();
+    pendingHeadlessNotes = [];
     for (const runner of runners) runner.reset();
     immuneTurnStart = undefined;
     refreshStatus(ctx);
@@ -234,7 +238,7 @@ export function registerAdvisorExtension(
     if (expectedEpoch !== undefined && expectedEpoch !== sessionEpoch) return false;
     configuration = next;
     if (configuration.errors.length > 0 && ctx.hasUI) {
-      ctx.ui.notify(`advisor config warning: ${configuration.errors[0]}`, "warning");
+      ctx.ui.notify(`micro-manager config warning: ${configuration.errors[0]}`, "warning");
     }
     return true;
   }
@@ -262,7 +266,7 @@ export function registerAdvisorExtension(
     try {
       trust.rememberDecision(ctx.cwd, confirmed);
     } catch {
-      ctx.ui.notify("Could not save project trust; project advisor config remains inactive", "error");
+      ctx.ui.notify("Could not save project trust; project micro-manager config remains inactive", "error");
       return false;
     }
     if (!confirmed) return false;
@@ -285,6 +289,7 @@ export function registerAdvisorExtension(
     stopRunners(false);
     activeContext = ctx;
     inactiveStats = [];
+    pendingHeadlessNotes = [];
     if (!isEnabled() || !configuration) {
       if (seedToCurrent) cursor.seed(ctx.sessionManager.getBranch());
       refreshStatus(ctx);
@@ -296,7 +301,7 @@ export function registerAdvisorExtension(
         inactiveStats.push(emptyStats(definition.name, "paused"));
         continue;
       }
-      const resolved = resolveAdvisorModel(definition, ctx);
+      const resolved = resolveMicroManagerModel(definition, ctx);
       if (!resolved) {
         inactiveStats.push(emptyStats(definition.name, "no_model"));
         continue;
@@ -305,20 +310,20 @@ export function registerAdvisorExtension(
         name: definition.name,
         model: resolved.model,
         thinking: resolved.thinking,
-        systemPrompt: buildAdvisorSystemPrompt(definition, {
-          watchdogBlocks: configuration.watchdogBlocks,
+        systemPrompt: buildMicroManagerSystemPrompt(definition, {
+          priorityBlocks: configuration.priorityBlocks,
           ...(configuration.sharedInstructions ? { sharedInstructions: configuration.sharedInstructions } : {}),
         }),
-        tools: createAdvisorTools(definition.tools, ctx.cwd),
+        tools: createWorkspaceTools(definition.tools, ctx.cwd),
         complete: (model, context, options) => ctx.modelRegistry.complete(model, context, options),
         timeoutMs: configuration.settings.timeoutMs,
         maxOutputTokens: configuration.settings.maxOutputTokens,
         maxToolRounds: configuration.settings.maxToolRounds,
         maxContextChars: configuration.settings.maxContextChars,
         maxAttempts: configuration.settings.maxAttempts,
-        onAdvice: (note) => {
+        onReport: (note) => {
           if (expectedEpoch !== sessionEpoch || activeContext !== ctx) return;
-          routeAdvice(note, ctx);
+          routeReport(note, ctx);
         },
         onStateChange: () => {
           if (expectedEpoch === sessionEpoch && activeContext === ctx) refreshStatus(ctx);
@@ -337,27 +342,26 @@ export function registerAdvisorExtension(
     for (const runner of current) runner.dispose();
   }
 
-  function routeAdvice(note: AdvisorNote, ctx: ExtensionContext): void {
+  function routeReport(note: MicroManagerNote, ctx: ExtensionContext): void {
     deliveredNotes++;
+    if (ctx.mode === "print" || ctx.mode === "json") {
+      pendingHeadlessNotes.push(note);
+      refreshStatus(ctx);
+      return;
+    }
     const interrupting = isInterruptingSeverity(note.severity);
     const immune =
       interrupting &&
       immuneTurnStart !== undefined &&
       completedTurns < immuneTurnStart + (configuration?.settings.immuneTurns ?? 3);
-    const details = advisorMessageDetails([note]);
-    const message = {
-      customType: "advisor",
-      content: formatAdvisorBatchContent([note]),
-      display: true,
-      details,
-    };
+    const message = createReportMessage([note]);
 
     if (!interrupting || immune) {
       if (ctx.isIdle()) pi.sendMessage(message);
       else pi.sendMessage(message, { deliverAs: "followUp" });
       return;
     }
-    if (ctx.isIdle() && (ctx.mode === "print" || ctx.mode === "json" || note.severity !== "blocker")) {
+    if (ctx.isIdle() && note.severity !== "blocker") {
       pi.sendMessage(message);
       return;
     }
@@ -365,13 +369,34 @@ export function registerAdvisorExtension(
     pi.sendMessage(message, { deliverAs: "steer", triggerTurn: true });
   }
 
-  function allStats(): AdvisorRuntimeStats[] {
+  function flushHeadlessNotes(ctx: ExtensionContext): void {
+    if (pendingHeadlessNotes.length === 0) return;
+    const notes = pendingHeadlessNotes;
+    pendingHeadlessNotes = [];
+    const message = createReportMessage(notes);
+    if (ctx.mode === "print") {
+      pi.appendEntry("micro-manager-report", { content: message.content, details: message.details });
+      return;
+    }
+    pi.sendMessage(message);
+  }
+
+  function createReportMessage(notes: readonly MicroManagerNote[]) {
+    return {
+      customType: "micro-manager",
+      content: formatMicroManagerBatchContent(notes),
+      display: true,
+      details: microManagerMessageDetails(notes),
+    };
+  }
+
+  function allStats(): MicroManagerRuntimeStats[] {
     return [...runners.map((runner) => runner.stats), ...inactiveStats];
   }
 
   function statusText(): string {
     const stats = allStats();
-    const lines = [`advisor: ${isEnabled() ? (runners.length > 0 ? "active" : "enabled, unavailable") : "disabled"}`];
+    const lines = [`micro-manager: ${isEnabled() ? (runners.length > 0 ? "active" : "enabled, unavailable") : "disabled"}`];
     if (configuration) {
       lines.push(`config: ${configuration.sources.length > 0 ? configuration.sources.join(", ") : "none"}`);
       if (configuration.projectConfigDetected && !configuration.projectConfigLoaded) {
@@ -401,23 +426,23 @@ export function registerAdvisorExtension(
     const backlog = stats.reduce((sum, stat) => sum + stat.backlog, 0);
     const theme = ctx.ui.theme;
     if (!isEnabled()) {
-      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("dim", "○")} ${theme.fg("dim", "advisor")}`);
+      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("dim", "○")} ${theme.fg("dim", "micro-manager")}`);
     } else if (hasError) {
-      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("error", "!")} ${theme.fg("muted", "advisor")}`);
+      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("error", "!")} ${theme.fg("muted", "micro-manager")}`);
     } else if (backlog > 0) {
-      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("warning", "…")} ${theme.fg("muted", "advisor")}`);
+      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("warning", "…")} ${theme.fg("muted", "micro-manager")}`);
     } else if (runners.length > 0) {
       const count = runners.length > 1 ? ` ${runners.length}` : "";
-      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("success", "●")} ${theme.fg("muted", `advisor${count}`)}`);
+      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("success", "●")} ${theme.fg("muted", `micro-manager${count}`)}`);
     } else {
-      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("warning", "○")} ${theme.fg("muted", "advisor")}`);
+      ctx.ui.setStatus(STATUS_KEY, `${theme.fg("warning", "○")} ${theme.fg("muted", "micro-manager")}`);
     }
   }
 }
 
-function configuredDefinitions(configuration: AdvisorConfiguration): AdvisorDefinition[] {
-  if (configuration.advisors.length > 0) return configuration.advisors;
-  const definition: AdvisorDefinition = {
+function configuredDefinitions(configuration: MicroManagerConfiguration): MicroManagerDefinition[] {
+  if (configuration.managers.length > 0) return configuration.managers;
+  const definition: MicroManagerDefinition = {
     name: "default",
     enabled: true,
     thinking: configuration.settings.thinking,
@@ -427,17 +452,8 @@ function configuredDefinitions(configuration: AdvisorConfiguration): AdvisorDefi
   return [definition];
 }
 
-function createAdvisorTools(names: readonly AdvisorToolName[], cwd: string) {
-  return names.map((name) => {
-    if (name === "read") return createReadTool(cwd);
-    if (name === "grep") return createGrepTool(cwd);
-    if (name === "find") return createFindTool(cwd);
-    return createLsTool(cwd);
-  });
-}
-
-function resolveAdvisorModel(
-  definition: AdvisorDefinition,
+function resolveMicroManagerModel(
+  definition: MicroManagerDefinition,
   ctx: ExtensionContext,
 ): { model: Model<any>; thinking: ThinkingLevel } | undefined {
   if (!definition.model) return ctx.model ? { model: ctx.model, thinking: definition.thinking } : undefined;
@@ -461,7 +477,7 @@ function splitThinkingSuffix(value: string): { selector: string; thinking?: Thin
   return { selector: value.slice(0, colon), thinking: suffix };
 }
 
-function emptyStats(name: string, state: "paused" | "no_model"): AdvisorRuntimeStats {
+function emptyStats(name: string, state: "paused" | "no_model"): MicroManagerRuntimeStats {
   return { name, state, backlog: 0, turns: 0, inputTokens: 0, outputTokens: 0, cost: 0 };
 }
 
@@ -470,13 +486,13 @@ async function confirmProjectTrust(
   confirm: (title: string, message: string) => Promise<boolean>,
 ): Promise<boolean> {
   return confirm(
-    "Trust project and enable advisor config?",
-    `Project: ${cwd}\n\nProject WATCHDOG files can select advisor models, add reviewer instructions, and grant read-only access to workspace files. Advisor reviews send bounded transcript and tool excerpts to the selected model. Trust this project?`,
+    "Trust project and enable The Micro Manager?",
+    `Project: ${cwd}\n\nProject MICRO_MANAGER files can select review models, add instructions, and grant read-only access to workspace files. The Micro Manager sends bounded transcript and tool excerpts to the selected model. Trust this project?`,
   );
 }
 
 function configGuidance(ctx: ExtensionContext): string {
-  return `Create ${ctx.cwd}/${CONFIG_DIR_NAME}/WATCHDOG.yml, then run /advisor reload:\n\nenabled: true\nthinking: low\ntools: [read, grep, find, ls]\nadvisors:\n  - name: Architecture\n    # model: anthropic/claude-sonnet-4-6:medium\n    instructions: |\n      Watch module seams and public-interface growth.\n\nOptional review priorities belong in ${ctx.cwd}/${CONFIG_DIR_NAME}/WATCHDOG.md. Project files require project trust. User-level defaults can live in ${getAgentDir()}/WATCHDOG.yml and WATCHDOG.md.`;
+  return `Create ${ctx.cwd}/${CONFIG_DIR_NAME}/MICRO_MANAGER.yml, then run /micro-manager reload:\n\nenabled: true\nthinking: low\ntools: [read, grep, find, ls]\nmanagers:\n  - name: Architecture\n    # model: anthropic/claude-sonnet-4-6:medium\n    instructions: |\n      Watch module seams and public-interface growth.\n\nOptional review priorities belong in ${ctx.cwd}/${CONFIG_DIR_NAME}/MICRO_MANAGER.md. Project files require project trust. User-level defaults can live in ${getAgentDir()}/MICRO_MANAGER.yml and MICRO_MANAGER.md.`;
 }
 
 function errorMessage(value: unknown): string {

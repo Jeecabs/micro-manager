@@ -1,9 +1,4 @@
-/*
- * Adapted from can1357/oh-my-pi's MIT-licensed advisor emission guard.
- * See THIRD_PARTY_NOTICES.md.
- */
-
-export function normalizeAdvisorNote(note: string): string {
+export function normalizeMicroManagerNote(note: string): string {
   return note
     .toLowerCase()
     .normalize("NFKC")
@@ -37,10 +32,8 @@ const SUPPRESSED_NORMALIZED_PHRASES = new Set([
   "no further input",
   "no further input needed",
   "no further input required",
-  "no further watcher input",
-  "no further watcher input needed",
-  "no further advice",
-  "no further advice needed",
+  "no further report",
+  "no further report needed",
   "lgtm",
   "looks good",
   "all good",
@@ -53,7 +46,7 @@ const SUPPRESSED_NORMALIZED_PHRASES = new Set([
 
 const DEFAULT_HISTORY_CAPACITY = 4096;
 
-export class AdvisorEmissionGuard {
+export class MicroManagerEmissionGuard {
   readonly #capacity: number;
   #consumedThisUpdate = false;
   #seen = new Set<string>();
@@ -74,7 +67,7 @@ export class AdvisorEmissionGuard {
   }
 
   accept(note: string): boolean {
-    const key = normalizeAdvisorNote(note);
+    const key = normalizeMicroManagerNote(note);
     if (!key || SUPPRESSED_NORMALIZED_PHRASES.has(key)) return false;
     if (this.#seen.has(key) || this.#consumedThisUpdate) return false;
 

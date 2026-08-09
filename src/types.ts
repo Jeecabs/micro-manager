@@ -1,36 +1,36 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 
-export const ADVISOR_TOOL_NAMES = ["read", "grep", "find", "ls"] as const;
-export type AdvisorToolName = (typeof ADVISOR_TOOL_NAMES)[number];
+export const MICRO_MANAGER_TOOL_NAMES = ["read", "grep", "find", "ls"] as const;
+export type MicroManagerToolName = (typeof MICRO_MANAGER_TOOL_NAMES)[number];
 
-export const ADVISOR_SEVERITIES = ["nit", "concern", "blocker"] as const;
-export type AdvisorSeverity = (typeof ADVISOR_SEVERITIES)[number];
+export const MICRO_MANAGER_SEVERITIES = ["nit", "concern", "blocker"] as const;
+export type MicroManagerSeverity = (typeof MICRO_MANAGER_SEVERITIES)[number];
 
-export interface AdvisorNote {
+export interface MicroManagerNote {
   note: string;
-  severity?: AdvisorSeverity;
-  advisor?: string;
+  severity?: MicroManagerSeverity;
+  manager?: string;
 }
 
-export interface AdvisorMessageDetails {
-  notes: AdvisorNote[];
+export interface MicroManagerMessageDetails {
+  notes: MicroManagerNote[];
 }
 
-export interface AdvisorDefinition {
+export interface MicroManagerDefinition {
   name: string;
   enabled: boolean;
   model?: string;
   thinking: ThinkingLevel;
-  tools: AdvisorToolName[];
+  tools: MicroManagerToolName[];
   instructions?: string;
 }
 
-export interface AdvisorSettings {
+export interface MicroManagerSettings {
   enabled: boolean;
   model?: string;
   thinking: ThinkingLevel;
-  tools: AdvisorToolName[];
+  tools: MicroManagerToolName[];
   timeoutMs: number;
   maxInputChars: number;
   maxOutputTokens: number;
@@ -40,22 +40,22 @@ export interface AdvisorSettings {
   immuneTurns: number;
 }
 
-export interface AdvisorConfiguration {
-  settings: AdvisorSettings;
-  advisors: AdvisorDefinition[];
+export interface MicroManagerConfiguration {
+  settings: MicroManagerSettings;
+  managers: MicroManagerDefinition[];
   sharedInstructions?: string;
-  watchdogBlocks: string[];
+  priorityBlocks: string[];
   sources: string[];
   errors: string[];
   projectConfigDetected: boolean;
   projectConfigLoaded: boolean;
 }
 
-export type AdvisorRuntimeState = "running" | "paused" | "error" | "no_model";
+export type MicroManagerRuntimeState = "running" | "paused" | "error" | "no_model";
 
-export interface AdvisorRuntimeStats {
+export interface MicroManagerRuntimeStats {
   name: string;
-  state: AdvisorRuntimeState;
+  state: MicroManagerRuntimeState;
   model?: Model<any>;
   backlog: number;
   turns: number;
