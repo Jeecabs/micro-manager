@@ -419,7 +419,7 @@ export function registerMicroManagerExtension(
   }
 
   // ponytail: blink is a footer-status timer, not setWorkingIndicator — that would hijack the primary spinner
-  const BLINK_FRAMES = ["ಠ_ಠ", "ಠ_ಠ", "ಠ_ಠ", "–_–"];
+  const BLINK_FRAMES = ["¬_¬", "¬_¬", "¬_¬", "-_-"];
 
   function stopBlink(): void {
     if (!blinkTimer) return;
@@ -452,14 +452,14 @@ export function registerMicroManagerExtension(
     }
     stopBlink();
     if (!isEnabled()) {
-      ctx.ui.setStatus(STATUS_KEY, theme.fg("dim", "ಠ‿ಠ"));
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("dim", "^_^"));
     } else if (hasError) {
-      ctx.ui.setStatus(STATUS_KEY, theme.fg("error", "ಠ_ಠ !"));
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("error", "¬_¬ !"));
     } else if (runners.length > 0) {
       const count = runners.length > 1 ? ` ×${runners.length}` : "";
-      ctx.ui.setStatus(STATUS_KEY, theme.fg("muted", `ಠ_ಠ${count}`));
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("muted", `¬_¬${count}`));
     } else {
-      ctx.ui.setStatus(STATUS_KEY, theme.fg("warning", "ಠ_ಠ ?"));
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("warning", "¬_¬ ?"));
     }
   }
 }
