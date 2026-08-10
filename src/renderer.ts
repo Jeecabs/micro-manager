@@ -3,7 +3,8 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { normalizeMicroManagerText } from "./message-format.ts";
 import { MICRO_MANAGER_SEVERITIES, type MicroManagerMessageDetails, type MicroManagerSeverity } from "./types.ts";
 
-export const MICRO_MANAGER_GLYPH = "ಠ_ಠ";
+// ponytail: ASCII/Latin-1 face — Kannada ಠ falls back to non-mono fonts and breaks alignment
+export const MICRO_MANAGER_GLYPH = "¬_¬";
 
 const SEVERITY_GLYPHS: Record<MicroManagerSeverity, string> = { nit: "·", concern: "▲", blocker: "✖" };
 
@@ -21,7 +22,8 @@ export const renderMicroManagerMessage: MessageRenderer<MicroManagerMessageDetai
     .filter((severity) => counts[severity] > 0)
     .map((severity) => theme.fg(severityColor(severity), `${SEVERITY_GLYPHS[severity]}${counts[severity]}`))
     .join(" ");
-  box.addChild(new Text(`${theme.fg("accent", theme.bold(MICRO_MANAGER_GLYPH))}  ${summary}`.trimEnd(), 0, 0));
+  const label = `${theme.fg("accent", theme.bold(MICRO_MANAGER_GLYPH))} ${theme.fg("customMessageLabel", theme.bold("[micro-manager]"))}`;
+  box.addChild(new Text(`${label}  ${summary}`.trimEnd(), 0, 0));
 
   const shown = expanded ? notes : notes.slice(0, 3);
   for (const entry of shown) {
