@@ -1,7 +1,6 @@
 {
   "name": "@jeecabs/micro-manager",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "The Micro Manager: bounded background review for Pi coding sessions.",
   "license": "MIT",
@@ -15,25 +14,37 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Jeecabs/micro-manager.git"
+    "url": "git+https://github.com/Jeecabs/micro-manager.git"
+  },
+  "homepage": "https://github.com/Jeecabs/micro-manager#readme",
+  "bugs": {
+    "url": "https://github.com/Jeecabs/micro-manager/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "src",
     "docs",
+    "assets",
     "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
     "LICENSE.md",
     "THIRD_PARTY_NOTICES.md"
   ],
   "pi": {
     "extensions": [
       "./src/index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/Jeecabs/micro-manager/main/assets/micro-manager.png"
   },
   "scripts": {
     "check": "tsc --noEmit",
     "test": "node --test --experimental-strip-types tests/*.test.ts",
     "pack:check": "npm pack --dry-run",
-    "verify": "pnpm check && pnpm test && pnpm pack:check"
+    "verify": "pnpm check && pnpm test && pnpm pack:check",
+    "prepublishOnly": "pnpm check && pnpm test"
   },
   "dependencies": {
     "yaml": "^2.8.1"

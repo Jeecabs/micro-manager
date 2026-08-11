@@ -221,14 +221,16 @@ export class MicroManagerRunner {
     let lastError: unknown;
     for (let attempt = 1; attempt <= this.#maxAttempts; attempt++) {
       if (parentSignal.aborted || epoch !== this.#epoch) return;
-      const snapshot = this.#messages.length;
+      const snapshot = this.#messages;
+      const snapshotLength = snapshot.length;
       try {
         await this.#review(update, parentSignal, epoch);
         return;
       } catch (error) {
-        this.#messages.length = snapshot;
         lastError = error;
-        if (parentSignal.aborted || epoch !== this.#epoch || attempt >= this.#maxAttempts) throw error;
+        if (parentSignal.aborted || epoch !== this.#epoch) throw error;
+        this.#messages.length = this.#messages === snapshot ? snapshotLength : 0;
+        if (attempt >= this.#maxAttempts) throw error;
         await delay(this.#retryDelayMs, parentSignal);
       }
     }
@@ -262,6 +264,8 @@ export class MicroManagerRunner {
           { systemPrompt: this.#systemPrompt, messages: [...this.#messages], tools: this.#tools },
           this.#completionOptions(signal),
         );
+        signal.throwIfAborted();
+        if (epoch !== this.#epoch) return;
         this.#recordUsage(response);
         this.#messages.push(response);
 
@@ -294,6 +298,8 @@ export class MicroManagerRunner {
             return this.#executeToolCall(call, signal);
           }),
         );
+        signal.throwIfAborted();
+        if (epoch !== this.#epoch) return;
         this.#messages.push(...results.map((entry) => entry.message));
         if (results.some((entry) => entry.reportHandled) || toolLimitReached) return;
       }

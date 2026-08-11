@@ -146,6 +146,34 @@ test("retries a clean bounded update after a provider failure", async () => {
   runner.dispose();
 });
 
+test("retry rolls back without sparse messages after a context reset", async () => {
+  const contexts: Context[] = [];
+  let calls = 0;
+  const runner = new MicroManagerRunner(
+    baseOptions({
+      maxAttempts: 2,
+      maxContextChars: 8_000,
+      complete: async (_model, context) => {
+        contexts.push(context);
+        calls++;
+        if (calls === 2) throw new Error("temporary provider failure");
+        return response([], "stop");
+      },
+    }),
+  );
+
+  runner.enqueue("a".repeat(4_000));
+  await waitFor(() => runner.backlog === 0);
+  runner.enqueue("b".repeat(4_000));
+  await waitFor(() => runner.backlog === 0);
+
+  const retryContext = contexts[2];
+  assert.ok(retryContext);
+  assert.equal(retryContext.messages.length, 1);
+  assert.ok(retryContext.messages.every((message) => message !== undefined));
+  runner.dispose();
+});
+
 test("bounds oversized updates and read results before the next model call", async () => {
   const contexts: Context[] = [];
   const notes: MicroManagerNote[] = [];
@@ -248,6 +276,37 @@ test("reports a provider-originated abort as a micro-manager error", async () =>
   runner.enqueue("aborted update");
   await waitFor(() => runner.stats.state === "error");
   assert.match(runner.stats.lastError ?? "", /provider cancelled/);
+  runner.dispose();
+});
+
+test("reset ignores a late response from a completion that does not honor abort", async () => {
+  const notes: MicroManagerNote[] = [];
+  let calls = 0;
+  let release: ((message: AssistantMessage) => void) | undefined;
+  const runner = new MicroManagerRunner(
+    baseOptions({
+      complete: async () => {
+        calls++;
+        if (calls !== 2) return response([], "stop");
+        return new Promise<AssistantMessage>((resolve) => {
+          release = resolve;
+        });
+      },
+      onReport: (note) => notes.push(note),
+    }),
+  );
+
+  runner.enqueue("first update");
+  await waitFor(() => runner.backlog === 0);
+  runner.enqueue("update that will be reset");
+  await waitFor(() => release !== undefined);
+  runner.reset();
+  runner.enqueue("fresh update");
+  release!(response([call("report", { note: "Stale report from the old context.", severity: "blocker" })]));
+  await waitFor(() => runner.backlog === 0);
+
+  assert.equal(calls, 3);
+  assert.deepEqual(notes, []);
   runner.dispose();
 });
 
