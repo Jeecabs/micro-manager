@@ -65,3 +65,31 @@ export interface MicroManagerRuntimeStats {
   cost: number;
   lastError?: string;
 }
+
+export type MicroManagerOverallState = "off" | "watching" | "reviewing" | "error" | "no_model";
+
+export interface MicroManagerStatusManager {
+  name: string;
+  state: MicroManagerRuntimeState;
+  model?: string;
+  backlog: number;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+  lastError?: string;
+}
+
+export interface MicroManagerStatusSnapshot {
+  state: MicroManagerOverallState;
+  managers: MicroManagerStatusManager[];
+  sources: string[];
+  warnings: string[];
+  projectConfigIgnored: boolean;
+  delivered: number;
+}
+
+export interface MicroManagerReportEntry {
+  content: string;
+  details: MicroManagerMessageDetails;
+}

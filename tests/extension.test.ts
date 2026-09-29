@@ -68,6 +68,10 @@ function microManagerResponse(note: string, severity: MicroManagerSeverity): Ass
   };
 }
 
+function silentResponse(): AssistantMessage {
+  return { ...microManagerResponse("", "nit"), content: [{ type: "text", text: "On track." }], stopReason: "stop" };
+}
+
 async function createHarness(options: {
   enabled?: boolean;
   idle?: boolean;
@@ -83,6 +87,7 @@ async function createHarness(options: {
   const commands = new Map<string, any>();
   const flags = new Map<string, any>();
   const renderers = new Map<string, any>();
+  const entryRenderers = new Map<string, any>();
   const sendCalls: Array<{ message: any; options: any }> = [];
   const appendCalls: Array<{ customType: string; data: any }> = [];
   const statuses: Array<string | undefined> = [];
@@ -113,6 +118,9 @@ async function createHarness(options: {
     },
     registerMessageRenderer(name: string, renderer: any) {
       renderers.set(name, renderer);
+    },
+    registerEntryRenderer(name: string, renderer: any) {
+      entryRenderers.set(name, renderer);
     },
     registerCommand(name: string, command: any) {
       commands.set(name, command);
@@ -178,6 +186,7 @@ async function createHarness(options: {
     commands,
     ctx,
     discoveryIncludeProject: () => discoveryIncludeProject,
+    entryRenderers,
     flags,
     handlers,
     notifications,
@@ -197,6 +206,28 @@ test("registers the complete Micro Manager public surface", async () => {
   assert.deepEqual([...h.commands.keys()], ["micro-manager"]);
   assert.deepEqual([...h.flags.keys()], ["micro-manager"]);
   assert.deepEqual([...h.renderers.keys()], ["micro-manager"]);
+  assert.deepEqual([...h.entryRenderers.keys()], ["micro-manager-status", "micro-manager-report"]);
+});
+
+test("status in the TUI appends a renderable snapshot instead of a transient notice", async () => {
+  const h = await createHarness();
+  await h.commands.get("micro-manager").handler("status", h.ctx);
+
+  assert.equal(h.notifications.length, 0);
+  assert.equal(h.appendCalls[0]?.customType, "micro-manager-status");
+  assert.equal(h.appendCalls[0]?.data.state, "watching");
+  assert.equal(h.appendCalls[0]?.data.managers[0].model, "openai/primary-model");
+  assert.deepEqual(h.appendCalls[0]?.data.sources, ["/test/MICRO_MANAGER.yml"]);
+});
+
+test("the footer face reacts to how a review ended", async () => {
+  const clean = await createHarness({ response: silentResponse() });
+  clean.handlers.get("turn_end")?.[0]?.({ turnIndex: 1 }, clean.ctx);
+  await waitFor(() => clean.statuses.at(-1) === "(¬_¬) fine.");
+
+  const blocked = await createHarness({ response: microManagerResponse("Deletes live data.", "blocker") });
+  blocked.handlers.get("turn_end")?.[0]?.({ turnIndex: 1 }, blocked.ctx);
+  await waitFor(() => blocked.statuses.at(-1) === "(ò_ó) stop.");
 });
 
 test("reviews turn asynchronously and preserves a late concern without waking the agent", async () => {

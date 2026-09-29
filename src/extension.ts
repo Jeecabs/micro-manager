@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
@@ -20,17 +21,24 @@ import {
   type MicroManagerConfigDiscoveryOptions,
 } from "./config.ts";
 import { buildMicroManagerSystemPrompt } from "./prompt.ts";
-import { renderMicroManagerMessage } from "./renderer.ts";
+import { FACES, IDLE_HEAD, REACTION_MS, REACTIONS, REVIEW_FRAME_MS, REVIEW_FRAMES, type Reaction } from "./face.ts";
+import { renderMicroManagerMessage, renderMicroManagerReportEntry, renderMicroManagerStatus } from "./renderer.ts";
 import { TranscriptCursor } from "./transcript.ts";
 import { createWorkspaceTools } from "./workspace-tools.ts";
 import type {
   MicroManagerConfiguration,
   MicroManagerDefinition,
   MicroManagerNote,
+  MicroManagerOverallState,
   MicroManagerRuntimeStats,
+  MicroManagerSeverity,
+  MicroManagerStatusSnapshot,
 } from "./types.ts";
 
 const STATUS_KEY = "micro-manager";
+const STATUS_ENTRY = "micro-manager-status";
+const REPORT_ENTRY = "micro-manager-report";
+const SEVERITY_RANK: Record<MicroManagerSeverity, number> = { nit: 0, concern: 1, blocker: 2 };
 const COMMAND_USAGE = "/micro-manager [on|off|status|reload|dump|config]";
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
@@ -74,8 +82,11 @@ export function registerMicroManagerExtension(
   let deliveredNotes = 0;
   let pendingHeadlessNotes: MicroManagerNote[] = [];
   let activeContext: ExtensionContext | undefined;
-  let blinkTimer: ReturnType<typeof setInterval> | undefined;
-  let blinkFrame = 0;
+  let animationTimer: ReturnType<typeof setInterval> | undefined;
+  let animationFrame = 0;
+  let reviewCycle: { turns: number; worst?: MicroManagerSeverity } | undefined;
+  let reaction: Reaction | undefined;
+  let reactionTimer: ReturnType<typeof setTimeout> | undefined;
 
   pi.registerFlag("micro-manager", {
     description: "Enable The Micro Manager for this process",
@@ -84,6 +95,8 @@ export function registerMicroManagerExtension(
   });
 
   pi.registerMessageRenderer("micro-manager", renderMicroManagerMessage);
+  pi.registerEntryRenderer(STATUS_ENTRY, renderMicroManagerStatus);
+  pi.registerEntryRenderer(REPORT_ENTRY, renderMicroManagerReportEntry);
 
   pi.registerCommand("micro-manager", {
     description: "Inspect or control The Micro Manager",
@@ -95,7 +108,8 @@ export function registerMicroManagerExtension(
     handler: async (args, ctx) => {
       const action = args.trim().toLowerCase() || "status";
       if (action === "status") {
-        outputCommandText(ctx, statusText(), "info");
+        if (ctx.mode === "tui") pi.appendEntry(STATUS_ENTRY, statusSnapshot());
+        else outputCommandText(ctx, statusText(), "info");
         return;
       }
       if (action === "on") {
@@ -111,6 +125,7 @@ export function registerMicroManagerExtension(
       if (action === "off") {
         sessionOverride = false;
         stopRunners();
+        clearReaction();
         refreshStatus(ctx);
         outputCommandText(ctx, "micro-manager disabled for this session", "info");
         return;
@@ -205,7 +220,8 @@ export function registerMicroManagerExtension(
     pendingHeadlessNotes = [];
     stopRunners();
     cursor.reset();
-    stopBlink();
+    stopAnimation();
+    clearReaction();
     if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
   });
 
@@ -219,6 +235,8 @@ export function registerMicroManagerExtension(
 
   function resetConversation(ctx: ExtensionContext): void {
     cursor.reset();
+    reviewCycle = undefined;
+    clearReaction();
     pendingHeadlessNotes = [];
     for (const runner of runners) runner.reset();
     immuneTurnStart = undefined;
@@ -347,6 +365,9 @@ export function registerMicroManagerExtension(
 
   function routeReport(note: MicroManagerNote, ctx: ExtensionContext): void {
     deliveredNotes++;
+    if (reviewCycle && SEVERITY_RANK[note.severity ?? "nit"] >= SEVERITY_RANK[reviewCycle.worst ?? "nit"]) {
+      reviewCycle.worst = note.severity ?? "nit";
+    }
     if (ctx.mode === "print" || ctx.mode === "json") {
       pendingHeadlessNotes.push(note);
       refreshStatus(ctx);
@@ -378,7 +399,7 @@ export function registerMicroManagerExtension(
     pendingHeadlessNotes = [];
     const message = createReportMessage(notes);
     if (ctx.mode === "print") {
-      pi.appendEntry("micro-manager-report", { content: message.content, details: message.details });
+      pi.appendEntry(REPORT_ENTRY, { content: message.content, details: message.details });
       return;
     }
     pi.sendMessage(message);
@@ -418,50 +439,116 @@ export function registerMicroManagerExtension(
     return lines.join("\n");
   }
 
-  // ponytail: blink is a footer-status timer, not setWorkingIndicator — that would hijack the primary spinner
-  const BLINK_FRAMES = ["¬_¬", "¬_¬", "¬_¬", "-_-"];
+  function overallState(stats: readonly MicroManagerRuntimeStats[]): MicroManagerOverallState {
+    if (!isEnabled()) return "off";
+    if (stats.some((stat) => stat.state === "error")) return "error";
+    if (runners.length === 0) return stats.some((stat) => stat.state === "no_model") ? "no_model" : "off";
+    return stats.some((stat) => stat.backlog > 0) ? "reviewing" : "watching";
+  }
 
-  function stopBlink(): void {
-    if (!blinkTimer) return;
-    clearInterval(blinkTimer);
-    blinkTimer = undefined;
-    blinkFrame = 0;
+  function statusSnapshot(): MicroManagerStatusSnapshot {
+    const stats = allStats();
+    return {
+      state: overallState(stats),
+      managers: stats.map((stat) => ({
+        name: stat.name,
+        state: stat.state,
+        ...(stat.model ? { model: `${stat.model.provider}/${stat.model.id}` } : {}),
+        backlog: stat.backlog,
+        turns: stat.turns,
+        inputTokens: stat.inputTokens,
+        outputTokens: stat.outputTokens,
+        cost: stat.cost,
+        ...(stat.lastError ? { lastError: stat.lastError } : {}),
+      })),
+      sources: (configuration?.sources ?? []).map(shortenHome),
+      warnings: [...(configuration?.errors ?? [])],
+      projectConfigIgnored: Boolean(configuration?.projectConfigDetected && !configuration.projectConfigLoaded),
+      delivered: deliveredNotes,
+    };
+  }
+
+  // ponytail: the face animates through footer status, not setWorkingIndicator — that would hijack the primary spinner
+  function stopAnimation(): void {
+    if (!animationTimer) return;
+    clearInterval(animationTimer);
+    animationTimer = undefined;
+    animationFrame = 0;
+  }
+
+  function clearReaction(): void {
+    if (reactionTimer) clearTimeout(reactionTimer);
+    reactionTimer = undefined;
+    reaction = undefined;
+  }
+
+  function react(kind: Reaction): void {
+    clearReaction();
+    reaction = kind;
+    reactionTimer = setTimeout(() => {
+      reactionTimer = undefined;
+      reaction = undefined;
+      if (activeContext) refreshStatus(activeContext);
+    }, REACTION_MS);
+    reactionTimer.unref?.();
+  }
+
+  /** A review cycle runs while any backlog exists; the face reacts once it drains after real model work. */
+  function observeReviewCycle(backlog: number, hasError: boolean): void {
+    const turns = runners.reduce((sum, runner) => sum + runner.stats.turns, 0);
+    if (backlog > 0) {
+      reviewCycle ??= { turns };
+      return;
+    }
+    const cycle = reviewCycle;
+    reviewCycle = undefined;
+    if (!cycle || hasError || !isEnabled() || turns <= cycle.turns) return;
+    react(cycle.worst ?? "clean");
   }
 
   function refreshStatus(ctx: ExtensionContext): void {
     if (!ctx.hasUI) return;
     if (!configuration && runners.length === 0) {
-      stopBlink();
+      stopAnimation();
       ctx.ui.setStatus(STATUS_KEY, undefined);
       return;
     }
     const stats = allStats();
     const hasError = stats.some((stat) => stat.state === "error");
     const backlog = stats.reduce((sum, stat) => sum + stat.backlog, 0);
+    observeReviewCycle(backlog, hasError);
     const theme = ctx.ui.theme;
+    const count = runners.length > 1 ? theme.fg("dim", ` ×${runners.length}`) : "";
     if (isEnabled() && !hasError && backlog > 0) {
-      if (!blinkTimer) {
-        blinkTimer = setInterval(() => {
-          blinkFrame++;
+      if (!animationTimer) {
+        animationTimer = setInterval(() => {
+          animationFrame++;
           if (activeContext) refreshStatus(activeContext);
-        }, 600);
-        blinkTimer.unref?.();
+        }, REVIEW_FRAME_MS);
+        animationTimer.unref?.();
       }
-      ctx.ui.setStatus(STATUS_KEY, theme.fg("warning", `${BLINK_FRAMES[blinkFrame % BLINK_FRAMES.length]} …`));
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("accent", REVIEW_FRAMES[animationFrame % REVIEW_FRAMES.length]!) + count);
       return;
     }
-    stopBlink();
+    stopAnimation();
     if (!isEnabled()) {
-      ctx.ui.setStatus(STATUS_KEY, theme.fg("dim", "^_^"));
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("dim", `${FACES.asleep} zz`));
     } else if (hasError) {
-      ctx.ui.setStatus(STATUS_KEY, theme.fg("error", "¬_¬ !"));
-    } else if (runners.length > 0) {
-      const count = runners.length > 1 ? ` ×${runners.length}` : "";
-      ctx.ui.setStatus(STATUS_KEY, theme.fg("muted", `¬_¬${count}`));
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("error", FACES.error));
+    } else if (runners.length === 0) {
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("warning", FACES.confused));
+    } else if (reaction) {
+      const look = REACTIONS[reaction];
+      ctx.ui.setStatus(STATUS_KEY, theme.fg(look.color, `${look.face} ${look.word}`));
     } else {
-      ctx.ui.setStatus(STATUS_KEY, theme.fg("warning", "¬_¬ ?"));
+      ctx.ui.setStatus(STATUS_KEY, theme.fg("muted", IDLE_HEAD) + count);
     }
   }
+}
+
+function shortenHome(path: string): string {
+  const home = homedir();
+  return home && path.startsWith(home) ? `~${path.slice(home.length)}` : path;
 }
 
 function configuredDefinitions(configuration: MicroManagerConfiguration): MicroManagerDefinition[] {
