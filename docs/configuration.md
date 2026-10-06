@@ -1,10 +1,19 @@
 # Configuration
 
-The Micro Manager loads YAML settings and Markdown review priorities. User files apply to all projects. Project files apply only after Pi grants project trust.
+The Micro Manager loads YAML settings and Markdown review priorities. User files apply to all projects. Project files apply only in a trusted project.
+
+Pi and Claude Code read the same files with the same rules. They differ only in their user directory and project directory:
+
+| Host | User directory | Project directory |
+|---|---|---|
+| Pi | `~/.pi/agent` | `.pi` |
+| Claude Code | `~/.claude`, or `$CLAUDE_CONFIG_DIR` when set | `.claude` |
+
+A `MICRO_MANAGER.yml` at the repository root applies in both hosts.
 
 ## Quick configuration
 
-Create `~/.pi/agent/MICRO_MANAGER.yml`:
+Create `~/.pi/agent/MICRO_MANAGER.yml` for Pi or `~/.claude/MICRO_MANAGER.yml` for Claude Code:
 
 ```yaml
 enabled: true
@@ -23,7 +32,7 @@ Top-level settings control the extension and all manager runtimes.
 | Key | Default | Accepted value | Effect |
 |---|---:|---|---|
 | `enabled` | `false` | Boolean | Enable review when the session starts. |
-| `model` | Primary model | Model selector | Set the inherited review model. |
+| `model` | Host default | Model selector | Set the inherited review model. Pi defaults to the primary model, Claude Code to Sonnet. |
 | `thinking` | `low` | Pi thinking level | Set the inherited thinking level. |
 | `tools` | All four tools | Tool-name array | Set the inherited investigation tools. |
 | `timeout_ms` | `30000` | 1,000 to 120,000 | Limit one provider attempt, including its tool rounds. |
@@ -60,7 +69,21 @@ model: anthropic/claude-sonnet-4-6:medium
 
 A bare model ID works only when exactly one registered provider has that ID. Use `provider/model` to avoid ambiguity.
 
-If you omit `model`, the manager follows the primary session model. The extension rebuilds inherited-model managers after primary model selection changes. It starts from current history and does not replay earlier turns.
+In Pi, a manager without `model` follows the primary session model. The extension rebuilds those managers after primary model selection changes. It starts from current history and does not replay earlier turns. In Claude Code, a manager without `model` uses Sonnet.
+
+### Claude Code models
+
+Claude Code reviews through its own model client, so a selector names a Claude model. Without one, managers use Sonnet, and with the default `low` thinking level they run at Claude Code's lowest effort. Name another model to trade cost for depth:
+
+```yaml
+model: opus
+```
+
+Claude Code accepts an alias such as `haiku`, `sonnet`, or `opus`, or a full model ID. It also accepts `anthropic/<id>`, so a file shared with Pi can use one spelling. A selector for another provider does not resolve, and that manager shows `no_model`.
+
+The thinking level becomes Claude Code's effort setting. `off`, `minimal`, and `low` map to `low`. `medium`, `high`, `xhigh`, and `max` map to the level of the same name.
+
+Claude Code's model call has no native tool calling, so the manager calls tools by replying with one JSON object. Sonnet and Opus follow this reliably. Haiku sometimes wraps the object in prose; the manager still extracts it, but treat Haiku as best effort.
 
 ## Named managers
 
@@ -124,7 +147,7 @@ Treat these files as model instructions. Do not put secrets in them.
 
 ## File locations and load order
 
-The extension checks these user files first:
+The extension checks these user files first. The examples use Pi's directories; Claude Code uses `~/.claude` and `.claude` in their place.
 
 1. `~/.pi/agent/MICRO_MANAGER.yml` or `MICRO_MANAGER.yaml`
 2. `~/.pi/agent/MICRO_MANAGER.md`
@@ -144,7 +167,7 @@ Manager names use a normalized lowercase identity. A later manager replaces the 
 
 For example, `Architecture`, `architecture`, and `Architecture /` normalize to the same identity. Use stable, distinct names across configuration levels.
 
-Outside a Git worktree, the extension checks only the current directory and its `.pi` directory for project files.
+Outside a Git worktree, the extension checks only the current directory and its project directory for project files.
 
 ## Project trust
 
@@ -155,6 +178,8 @@ The extension checks file metadata to detect a project configuration. It does no
 In the TUI, the extension asks for trust when a root `MICRO_MANAGER` file is the only project resource. A saved `/trust` decision applies to later sessions.
 
 Print and JSON modes cannot show this extension's trust prompt. Grant trust in an interactive session before a headless run. `--approve` can grant trust when the project also contains a standard Pi trust-gated resource, such as `.pi/settings.json`.
+
+In Claude Code, the plugin reads project files whenever it loads, as Claude Code reads a project's `CLAUDE.md`. An interactive session starts only after you accept Claude Code's workspace trust dialog. `claude -p` skips that dialog, as it does for the rest of the project's configuration.
 
 User files do not require project trust.
 

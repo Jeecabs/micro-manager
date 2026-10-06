@@ -1,58 +1,40 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Context, Model, ToolCall } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
-import { MicroManagerRunner, type MicroManagerRunnerOptions } from "../src/micro-manager-runner.ts";
-import type { MicroManagerNote } from "../src/types.ts";
+import type { ReviewModel, ReviewRequest, ReviewStep, ReviewToolCall } from "../src/core/model.ts";
+import { MicroManagerRunner, type MicroManagerRunnerOptions } from "../src/core/runner.ts";
+import type { Workspace, WorkspaceToolRequest } from "../src/core/tools.ts";
+import type { MicroManagerNote } from "../src/core/types.ts";
+import { sleep } from "../src/pi/extension.ts";
 
-const MODEL: Model<"openai-responses"> = {
-  id: "review-model",
-  name: "Review Model",
-  api: "openai-responses",
-  provider: "openai",
-  baseUrl: "https://example.invalid/v1",
-  reasoning: true,
-  input: ["text"],
-  cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 100_000,
-  maxTokens: 4_096,
-};
-
-const readSchema = Type.Object({ path: Type.String() });
-
-function response(content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"] = "toolUse"): AssistantMessage {
-  return {
-    role: "assistant",
-    content,
-    api: MODEL.api,
-    provider: MODEL.provider,
-    model: MODEL.id,
-    usage: {
-      input: 10,
-      output: 5,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 15,
-      cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 },
-    },
-    stopReason,
-    timestamp: Date.now(),
-  };
+function step(calls: ReviewToolCall[] = [], stop: ReviewStep["stop"] = calls.length > 0 ? "tool" : "end"): ReviewStep {
+  return { text: "", calls, usage: { input: 10, output: 5, cost: 0.03 }, stop };
 }
 
-function call(name: string, arguments_: Record<string, unknown>, id = `${name}-call`): ToolCall {
-  return { type: "toolCall", id, name, arguments: arguments_ };
+function call(name: string, args: Record<string, unknown>, id = `${name}-call`): ReviewToolCall {
+  return { id, name, arguments: args };
+}
+
+function model(respond: (request: ReviewRequest) => ReviewStep | Promise<ReviewStep>): ReviewModel {
+  return { label: "test/review-model", step: async (request) => respond(request) };
+}
+
+function workspace(run: (request: WorkspaceToolRequest) => string = (request) => `contents of ${request.args.path}`): Workspace {
+  return {
+    root: "/ws",
+    resolve: (target) => (target.startsWith("/") ? target : `/ws/${target}`),
+    realPath: async (target) => target,
+    run: async (request) => [{ type: "text", text: run(request) }],
+  };
 }
 
 function baseOptions(overrides: Partial<MicroManagerRunnerOptions> = {}): MicroManagerRunnerOptions {
   return {
     name: "default",
-    model: MODEL,
-    thinking: "low",
+    model: model(() => step()),
     systemPrompt: "Review independently.",
     tools: [],
-    complete: async () => response([], "stop"),
+    workspace: workspace(),
+    sleep,
     timeoutMs: 5_000,
     maxOutputTokens: 512,
     maxToolRounds: 3,
@@ -67,25 +49,19 @@ function baseOptions(overrides: Partial<MicroManagerRunnerOptions> = {}): MicroM
 test("uses read-only tools, then delivers one structured management note", async () => {
   const notes: MicroManagerNote[] = [];
   let readCalls = 0;
-  const readTool: AgentTool<typeof readSchema> = {
-    name: "read",
-    label: "Read",
-    description: "Read a file",
-    parameters: readSchema,
-    async execute(_id, args) {
-      readCalls++;
-      return { content: [{ type: "text", text: `contents of ${args.path}` }], details: {} };
-    },
-  };
-  const responses = [
-    response([call("read", { path: "src/queue.ts" })]),
-    response([call("report", { note: "Await queue.flush() before reporting completion.", severity: "concern" })]),
+  const steps = [
+    step([call("read", { path: "src/queue.ts" })]),
+    step([call("report", { note: "Await queue.flush() before reporting completion.", severity: "concern" })]),
   ];
   const runner = new MicroManagerRunner(
     baseOptions({
       name: "Architecture",
-      tools: [readTool],
-      complete: async () => responses.shift() ?? response([], "stop"),
+      tools: ["read"],
+      workspace: workspace((request) => {
+        readCalls++;
+        return `contents of ${request.args.path}`;
+      }),
+      model: model(() => steps.shift() ?? step()),
       onReport: (note) => notes.push(note),
     }),
   );
@@ -103,6 +79,53 @@ test("uses read-only tools, then delivers one structured management note", async
   assert.equal(runner.stats.turns, 2);
   assert.equal(runner.stats.inputTokens, 20);
   assert.equal(runner.stats.cost, 0.06);
+  assert.equal(runner.stats.model, "test/review-model");
+  runner.dispose();
+});
+
+test("returns tool failures to the review model instead of running them", async () => {
+  const requests: ReviewRequest[] = [];
+  let ran = 0;
+  const steps = [
+    step([
+      call("grep", { pattern: "x" }, "not-granted"),
+      call("read", {}, "missing-path"),
+      call("read", { path: "../secrets.txt" }, "escapes"),
+    ]),
+    step(),
+  ];
+  const runner = new MicroManagerRunner(
+    baseOptions({
+      tools: ["read"],
+      workspace: workspace(() => {
+        ran++;
+        return "unexpected";
+      }),
+      model: model((request) => {
+        requests.push(request);
+        return steps.shift() ?? step();
+      }),
+    }),
+  );
+
+  runner.enqueue("update");
+  await waitFor(() => runner.backlog === 0);
+
+  assert.equal(ran, 0);
+  assert.deepEqual(
+    requests[0]?.tools.map((tool) => tool.name),
+    ["report", "read"],
+  );
+  const results = requests[1]?.messages.filter((message) => message.role === "tool") ?? [];
+  assert.deepEqual(
+    results.map((message) => [message.role === "tool" && message.callId, message.role === "tool" && message.isError]),
+    [
+      ["not-granted", true],
+      ["missing-path", true],
+      ["escapes", true],
+    ],
+  );
+  assert.match(JSON.stringify(results), /not available.*path: is required.*inside the trusted workspace/s);
   runner.dispose();
 });
 
@@ -110,7 +133,7 @@ test("dedupes the same management note across separate updates", async () => {
   const notes: MicroManagerNote[] = [];
   const runner = new MicroManagerRunner(
     baseOptions({
-      complete: async () => response([call("report", { note: "Run the focused regression test.", severity: "nit" })]),
+      model: model(() => step([call("report", { note: "Run the focused regression test.", severity: "nit" })])),
       onReport: (note) => notes.push(note),
     }),
   );
@@ -130,11 +153,11 @@ test("retries a clean bounded update after a provider failure", async () => {
   const runner = new MicroManagerRunner(
     baseOptions({
       maxAttempts: 2,
-      complete: async () => {
+      model: model(() => {
         attempts++;
         if (attempts === 1) throw new Error("temporary provider failure");
-        return response([call("report", { note: "Check the fallback path.", severity: "concern" })]);
-      },
+        return step([call("report", { note: "Check the fallback path.", severity: "concern" })]);
+      }),
       onReport: (note) => notes.push(note),
     }),
   );
@@ -147,18 +170,18 @@ test("retries a clean bounded update after a provider failure", async () => {
 });
 
 test("retry rolls back without sparse messages after a context reset", async () => {
-  const contexts: Context[] = [];
+  const requests: ReviewRequest[] = [];
   let calls = 0;
   const runner = new MicroManagerRunner(
     baseOptions({
       maxAttempts: 2,
       maxContextChars: 8_000,
-      complete: async (_model, context) => {
-        contexts.push(context);
+      model: model((request) => {
+        requests.push(request);
         calls++;
         if (calls === 2) throw new Error("temporary provider failure");
-        return response([], "stop");
-      },
+        return step();
+      }),
     }),
   );
 
@@ -167,102 +190,108 @@ test("retry rolls back without sparse messages after a context reset", async () 
   runner.enqueue("b".repeat(4_000));
   await waitFor(() => runner.backlog === 0);
 
-  const retryContext = contexts[2];
-  assert.ok(retryContext);
-  assert.equal(retryContext.messages.length, 1);
-  assert.ok(retryContext.messages.every((message) => message !== undefined));
+  const retry = requests[2];
+  assert.ok(retry);
+  assert.equal(retry.messages.length, 1);
+  assert.ok(retry.messages.every((message) => message !== undefined));
   runner.dispose();
 });
 
 test("bounds oversized updates and read results before the next model call", async () => {
-  const contexts: Context[] = [];
+  const requests: ReviewRequest[] = [];
   const notes: MicroManagerNote[] = [];
-  const readTool: AgentTool<typeof readSchema> = {
-    name: "read",
-    label: "Read",
-    description: "Read a file",
-    parameters: readSchema,
-    async execute() {
-      return { content: [{ type: "text", text: "x".repeat(20_000) }], details: {} };
-    },
-  };
-  const responses = [
-    response([call("read", { path: "large.txt" })]),
-    response([call("report", { note: "The large file needs a focused parser.", severity: "nit" })]),
+  const steps = [
+    step([call("read", { path: "large.txt" })]),
+    step([call("report", { note: "The large file needs a focused parser.", severity: "nit" })]),
   ];
   const runner = new MicroManagerRunner(
     baseOptions({
-      tools: [readTool],
+      tools: ["read"],
+      workspace: workspace(() => "x".repeat(20_000)),
       maxContextChars: 8_000,
       maxToolRounds: 1,
-      complete: async (_model, context) => {
-        contexts.push(context);
-        return responses.shift() ?? response([], "stop");
-      },
+      model: model((request) => {
+        requests.push(request);
+        return steps.shift() ?? step();
+      }),
       onReport: (note) => notes.push(note),
     }),
   );
 
   runner.enqueue("u".repeat(20_000));
   await waitFor(() => notes.length === 1);
-  const firstUser = contexts[0]?.messages[0];
+  const firstUser = requests[0]?.messages[0];
   assert.equal(firstUser?.role, "user");
   assert.ok(JSON.stringify(firstUser).length < 4_500);
-  const toolResult = contexts[1]?.messages.find((message) => message.role === "toolResult");
+  const toolResult = requests[1]?.messages.find((message) => message.role === "tool");
   assert.ok(JSON.stringify(toolResult).length < 1_000);
+  runner.dispose();
+});
+
+test("replaces image output with an omission marker", async () => {
+  const requests: ReviewRequest[] = [];
+  const steps = [step([call("read", { path: "diagram.png" })]), step()];
+  const runner = new MicroManagerRunner(
+    baseOptions({
+      tools: ["read"],
+      workspace: { ...workspace(), run: async () => [{ type: "image" }] },
+      model: model((request) => {
+        requests.push(request);
+        return steps.shift() ?? step();
+      }),
+    }),
+  );
+
+  runner.enqueue("update");
+  await waitFor(() => runner.backlog === 0);
+  const result = requests[1]?.messages.find((message) => message.role === "tool");
+  assert.equal(result?.role === "tool" && result.text, "[image omitted from micro-manager context]");
   runner.dispose();
 });
 
 test("resets before serialized message overhead can silently drop an update", async () => {
   const maxContextChars = 8_000;
-  const contexts: Context[] = [];
-  const returned: AssistantMessage[] = [];
+  const requests: ReviewRequest[] = [];
   const runner = new MicroManagerRunner(
     baseOptions({
       maxContextChars,
-      complete: async (_model, context) => {
-        contexts.push(context);
-        const result = response([], "stop");
-        returned.push(result);
-        return result;
-      },
+      model: model((request) => {
+        requests.push(request);
+        return step();
+      }),
     }),
   );
 
-  runner.enqueue("a".repeat(3_700));
+  runner.enqueue("a".repeat(3_950));
   await waitFor(() => runner.backlog === 0);
-  const priorChars = JSON.stringify([...(contexts[0]?.messages ?? []), returned[0]]).length;
+  const stored = { role: "assistant", text: "", calls: [] };
+  const priorChars = JSON.stringify([...(requests[0]?.messages ?? []), stored]).length;
   const remaining = maxContextChars - priorChars;
   assert.ok(remaining >= 1_000 && remaining <= maxContextChars / 2);
 
   runner.enqueue("b".repeat(remaining));
   await waitFor(() => runner.backlog === 0);
-  assert.equal(contexts.length, 2);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1]?.messages.length, 1);
   runner.dispose();
 });
 
 test("does not execute investigative tools after the configured tool-round limit", async () => {
   let readCalls = 0;
-  const readTool: AgentTool<typeof readSchema> = {
-    name: "read",
-    label: "Read",
-    description: "Read a file",
-    parameters: readSchema,
-    async execute() {
-      readCalls++;
-      return { content: [{ type: "text", text: "unexpected" }], details: {} };
-    },
-  };
   const runner = new MicroManagerRunner(
     baseOptions({
-      tools: [readTool],
+      tools: ["read"],
+      workspace: workspace(() => {
+        readCalls++;
+        return "unexpected";
+      }),
       maxToolRounds: 0,
-      complete: async () => response([call("read", { path: "src/queue.ts" })]),
+      model: model(() => step([call("read", { path: "src/queue.ts" })])),
     }),
   );
 
   runner.enqueue("no-tools update");
-  await runner.waitForIdle(1_000);
+  assert.equal(await runner.waitForIdle(1_000), true);
   assert.equal(readCalls, 0);
   assert.equal(runner.stats.turns, 1);
   runner.dispose();
@@ -270,7 +299,7 @@ test("does not execute investigative tools after the configured tool-round limit
 
 test("reports a provider-originated abort as a micro-manager error", async () => {
   const runner = new MicroManagerRunner(
-    baseOptions({ complete: async () => ({ ...response([], "aborted"), errorMessage: "provider cancelled" }) }),
+    baseOptions({ model: model(() => ({ ...step([], "aborted"), error: "provider cancelled" })) }),
   );
 
   runner.enqueue("aborted update");
@@ -279,19 +308,63 @@ test("reports a provider-originated abort as a micro-manager error", async () =>
   runner.dispose();
 });
 
+test("times out a slow attempt with the configured budget", async () => {
+  const runner = new MicroManagerRunner(
+    baseOptions({
+      timeoutMs: 20,
+      model: model(
+        (request) =>
+          new Promise<ReviewStep>((_resolve, reject) => {
+            request.signal.addEventListener("abort", () => reject(new Error("aborted by signal")), { once: true });
+          }),
+      ),
+    }),
+  );
+
+  runner.enqueue("slow update");
+  await waitFor(() => runner.stats.state === "error");
+  assert.match(runner.stats.lastError ?? "", /timed out/);
+  runner.dispose();
+});
+
+test("waitForIdle gives up when the backlog outlasts its budget", async () => {
+  let release: ((value: ReviewStep) => void) | undefined;
+  const runner = new MicroManagerRunner(
+    baseOptions({ model: model(() => new Promise<ReviewStep>((resolve) => (release = resolve))) }),
+  );
+
+  runner.enqueue("held update");
+  assert.equal(await runner.waitForIdle(20), false);
+  release!(step());
+  assert.equal(await runner.waitForIdle(1_000), true);
+  runner.dispose();
+});
+
+test("leaves cost unset when the host reports tokens only", async () => {
+  const runner = new MicroManagerRunner(
+    baseOptions({ model: model(() => ({ text: "", calls: [], usage: { input: 3, output: 1 }, stop: "end" })) }),
+  );
+
+  runner.enqueue("update");
+  await waitFor(() => runner.backlog === 0);
+  assert.equal(runner.stats.inputTokens, 3);
+  assert.equal(runner.stats.cost, undefined);
+  runner.dispose();
+});
+
 test("reset ignores a late response from a completion that does not honor abort", async () => {
   const notes: MicroManagerNote[] = [];
   let calls = 0;
-  let release: ((message: AssistantMessage) => void) | undefined;
+  let release: ((value: ReviewStep) => void) | undefined;
   const runner = new MicroManagerRunner(
     baseOptions({
-      complete: async () => {
+      model: model(() => {
         calls++;
-        if (calls !== 2) return response([], "stop");
-        return new Promise<AssistantMessage>((resolve) => {
+        if (calls !== 2) return step();
+        return new Promise<ReviewStep>((resolve) => {
           release = resolve;
         });
-      },
+      }),
       onReport: (note) => notes.push(note),
     }),
   );
@@ -302,7 +375,7 @@ test("reset ignores a late response from a completion that does not honor abort"
   await waitFor(() => release !== undefined);
   runner.reset();
   runner.enqueue("fresh update");
-  release!(response([call("report", { note: "Stale report from the old context.", severity: "blocker" })]));
+  release!(step([call("report", { note: "Stale report from the old context.", severity: "blocker" })]));
   await waitFor(() => runner.backlog === 0);
 
   assert.equal(calls, 3);
@@ -314,12 +387,12 @@ test("dispose aborts an in-flight provider request without reporting an error", 
   let observedSignal: AbortSignal | undefined;
   const runner = new MicroManagerRunner(
     baseOptions({
-      complete: async (_model, _context, options) => {
-        observedSignal = options?.signal;
-        return new Promise<AssistantMessage>((_resolve, reject) => {
-          observedSignal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      model: model((request) => {
+        observedSignal = request.signal;
+        return new Promise<ReviewStep>((_resolve, reject) => {
+          request.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
         });
-      },
+      }),
     }),
   );
 

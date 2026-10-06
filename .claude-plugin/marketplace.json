@@ -1,0 +1,12 @@
+{
+  "name": "micro-manager",
+  "owner": { "name": "Lachlan Jacobs" },
+  "description": "The Micro Manager: background review of coding turns.",
+  "plugins": [
+    {
+      "name": "micro-manager",
+      "source": "./",
+      "description": "Bounded background review of each turn by independent models."
+    }
+  ]
+}

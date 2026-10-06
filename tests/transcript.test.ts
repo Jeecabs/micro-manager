@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTranscriptExcerpt, TranscriptCursor } from "../src/transcript.ts";
+import { serializeTranscriptItems, TranscriptCursor } from "../src/core/transcript.ts";
+import { piHistory } from "../src/pi/transcript.ts";
 
 const entries = [
   {
@@ -43,19 +44,24 @@ const entries = [
   },
 ];
 
+function excerpt(source: readonly unknown[], maxChars: number): string {
+  return serializeTranscriptItems(piHistory(source).flatMap((entry) => entry.items), maxChars) ?? "";
+}
+
 test("renders useful transcript evidence while omitting thinking and prior report", () => {
-  const excerpt = buildTranscriptExcerpt(entries, 20_000) ?? "";
-  assert.match(excerpt, /Fix the queue/);
-  assert.match(excerpt, /src\/queue\.ts/);
-  assert.match(excerpt, /\[REDACTED\]/);
-  assert.match(excerpt, /Bearer \[REDACTED\]/);
-  assert.doesNotMatch(excerpt, /Hidden chain of thought/);
-  assert.doesNotMatch(excerpt, /Do not recurse/);
+  const text = excerpt(entries, 20_000);
+  assert.match(text, /Fix the queue/);
+  assert.match(text, /src\/queue\.ts/);
+  assert.match(text, /\[REDACTED\]/);
+  assert.match(text, /Bearer \[REDACTED\]/);
+  assert.doesNotMatch(text, /sk-supersecretvalue123/);
+  assert.doesNotMatch(text, /Hidden chain of thought/);
+  assert.doesNotMatch(text, /Do not recurse/);
 });
 
 test("cursor emits only new entries on append-only history", () => {
   const cursor = new TranscriptCursor();
-  const first = cursor.next(entries, 20_000);
+  const first = cursor.next(piHistory(entries), 20_000);
   assert.match(first?.text ?? "", /Fix the queue/);
   const nextEntries = [
     ...entries,
@@ -65,16 +71,16 @@ test("cursor emits only new entries on append-only history", () => {
       message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Queue fixed." }] },
     },
   ];
-  const second = cursor.next(nextEntries, 20_000);
+  const second = cursor.next(piHistory(nextEntries), 20_000);
   assert.equal(second?.reset, false);
   assert.match(second?.text ?? "", /Queue fixed/);
   assert.doesNotMatch(second?.text ?? "", /Fix the queue/);
-  assert.equal(cursor.next(nextEntries, 20_000), undefined);
+  assert.equal(cursor.next(piHistory(nextEntries), 20_000), undefined);
 });
 
 test("cursor replays bounded current history after a branch rewrite", () => {
   const cursor = new TranscriptCursor();
-  cursor.seed(entries);
+  cursor.seed(piHistory(entries));
   const rewritten = [
     {
       type: "message",
@@ -82,7 +88,7 @@ test("cursor replays bounded current history after a branch rewrite", () => {
       message: { role: "user", content: "Take another approach." },
     },
   ];
-  const delta = cursor.next(rewritten, 20_000);
+  const delta = cursor.next(piHistory(rewritten), 20_000);
   assert.equal(delta?.reset, true);
   assert.match(delta?.text ?? "", /another approach/);
 });
@@ -95,7 +101,7 @@ test("total excerpt respects its hard character budget", () => {
       message: { role: "toolResult", toolName: "read", content: "x".repeat(100_000), isError: false },
     },
   ];
-  const excerpt = buildTranscriptExcerpt(huge, 2_000) ?? "";
-  assert.ok(excerpt.length <= 2_000, `expected <= 2000 chars, got ${excerpt.length}`);
-  assert.match(excerpt, /…/);
+  const text = excerpt(huge, 2_000);
+  assert.ok(text.length <= 2_000, `expected <= 2000 chars, got ${text.length}`);
+  assert.match(text, /…/);
 });

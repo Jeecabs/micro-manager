@@ -3,12 +3,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
-import {
-  discoverMicroManagerConfiguration,
-  hasProjectMicroManagerCandidate,
-  parseConfigYaml,
-  slugifyMicroManagerName,
-} from "../src/config.ts";
+import { parseConfigYaml, slugifyMicroManagerName } from "../src/core/config.ts";
+import { discoverMicroManagerConfiguration, hasProjectMicroManagerCandidate } from "../src/pi/config-files.ts";
 
 test("parses strict config and normalizes standard-Pi tool aliases", () => {
   const parsed = parseConfigYaml(`

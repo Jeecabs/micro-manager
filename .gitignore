@@ -7,3 +7,6 @@ coverage/
 .env.*
 !.env.example
 .DS_Store
+
+# Claude Code lays its API types here when it loads the plugin from this folder
+.claude-plugin/types/
