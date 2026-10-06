@@ -1,6 +1,10 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "ES2023",
+    "lib": [
+      "ES2023"
+    ],
+    "types": [],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
@@ -8,16 +12,11 @@
     "exactOptionalPropertyTypes": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "allowImportingTsExtensions": true,
-    "types": [
-      "node"
-    ]
+    "allowImportingTsExtensions": true
   },
   "include": [
-    "src/**/*.ts",
-    "tests/**/*.ts"
-  ],
-  "exclude": [
-    "src/core/web.d.ts"
+    "src/core/**/*.ts",
+    "src/claude-code/**/*.ts",
+    "src/vendor/*.ts"
   ]
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MicroManagerEmissionGuard, normalizeMicroManagerNote } from "../src/emission-guard.ts";
+import { MicroManagerEmissionGuard, normalizeMicroManagerNote } from "../src/core/emission-guard.ts";
 
 test("normalizes punctuation, case, and whitespace", () => {
   assert.equal(normalizeMicroManagerNote("  *STOP.*  "), "stop");

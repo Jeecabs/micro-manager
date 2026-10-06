@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { renderMicroManagerMessage } from "../src/renderer.ts";
+import { renderMicroManagerMessage } from "../src/pi/renderer.ts";
 
 test("removes terminal controls from persisted names and notes", () => {
   const theme = {

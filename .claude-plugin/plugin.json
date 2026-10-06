@@ -1,0 +1,9 @@
+{
+  "name": "micro-manager",
+  "version": "0.1.0",
+  "description": "The Micro Manager: bounded background review of each turn by independent models.",
+  "author": { "name": "Lachlan Jacobs" },
+  "homepage": "https://github.com/Jeecabs/micro-manager#readme",
+  "repository": "https://github.com/Jeecabs/micro-manager",
+  "license": "MIT"
+}

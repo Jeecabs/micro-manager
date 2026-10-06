@@ -1,12 +1,7 @@
 import type { MessageRenderer } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { normalizeMicroManagerText } from "./message-format.ts";
-import { MICRO_MANAGER_SEVERITIES, type MicroManagerMessageDetails, type MicroManagerSeverity } from "./types.ts";
-
-// ponytail: ASCII/Latin-1 face — Kannada ಠ falls back to non-mono fonts and breaks alignment
-const MICRO_MANAGER_GLYPH = "¬_¬";
-
-const SEVERITY_GLYPHS: Record<MicroManagerSeverity, string> = { nit: "·", concern: "▲", blocker: "✖" };
+import { MICRO_MANAGER_GLYPH, normalizeMicroManagerText, SEVERITY_GLYPHS } from "../core/message-format.ts";
+import { MICRO_MANAGER_SEVERITIES, type MicroManagerMessageDetails, type MicroManagerSeverity } from "../core/types.ts";
 
 export const renderMicroManagerMessage: MessageRenderer<MicroManagerMessageDetails> = (
   message,

@@ -107,7 +107,7 @@ Increase `immune_turns` to create a longer non-interrupting period:
 immune_turns: 5
 ```
 
-Set it to `0` to disable immunity. During immunity, reports still arrive as follow-up notes or cards.
+Set it to `0` to disable immunity. During immunity, reports still arrive, queued or shown, without steering.
 
 ## Print output has no report text
 
@@ -116,6 +116,18 @@ Print mode preserves primary stdout. The extension stores reports as `micro-mana
 JSON mode emits a final micro-manager card. Both headless modes wait for final review work for at most 60 seconds. They do not start hidden primary turns.
 
 Use JSON mode or inspect the saved Pi session when automation must consume report data.
+
+`claude -p` also keeps stdout unchanged. It stores notes as notices in the session transcript and waits at most 8 seconds for the final review, because Claude Code gives a hook 10 seconds.
+
+## Claude Code shows no notes
+
+Run `/plugin` and confirm that `micro-manager` is installed and enabled. If you installed it from a shell during a session, run `/reload-plugins`.
+
+The band above the prompt shows notes until your next prompt, then clears. Earlier notes stay in the verbose transcript; press ctrl+o to see them.
+
+A warning line under the prompt names a failed review or an unresolved model. Run `/micro-manager status` for the error. A manager whose model names another provider, such as `openai/gpt-5.4`, cannot review in Claude Code.
+
+`grep` and `find` reviews need ripgrep (`rg`) on `PATH`. Without it, those calls return an error to the manager, which can still use `read` and `ls`.
 
 ## Review uses too much time or money
 

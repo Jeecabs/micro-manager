@@ -1,18 +1,16 @@
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
-import { parseDocument } from "yaml";
+import { parseDocument } from "../vendor/yaml.js";
 import { normalizeMicroManagerText } from "./message-format.ts";
 import {
   MICRO_MANAGER_TOOL_NAMES,
+  THINKING_LEVELS,
   type MicroManagerConfiguration,
   type MicroManagerDefinition,
   type MicroManagerSettings,
   type MicroManagerToolName,
+  type ThinkingLevel,
 } from "./types.ts";
 
-const MAX_CONFIG_BYTES = 64 * 1024;
+export const MAX_CONFIG_BYTES = 64 * 1024;
 const MAX_MANAGERS = 8;
 const MAX_MANAGER_NAME_CHARS = 80;
 const DEFAULT_SETTINGS: MicroManagerSettings = {
@@ -44,7 +42,7 @@ const TOP_LEVEL_KEYS = new Set([
   "managers",
 ]);
 const MICRO_MANAGER_KEYS = new Set(["name", "enabled", "model", "thinking", "tools", "instructions"]);
-const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const THINKING_LEVEL_SET = new Set<string>(THINKING_LEVELS);
 const TOOL_ALIASES = new Map<string, MicroManagerToolName>([
   ["read", "read"],
   ["grep", "grep"],
@@ -53,12 +51,6 @@ const TOOL_ALIASES = new Map<string, MicroManagerToolName>([
   ["glob", "find"],
   ["ls", "ls"],
 ]);
-
-interface ConfigCandidate {
-  path: string;
-  level: "user" | "project";
-  kind: "yaml" | "markdown";
-}
 
 interface PartialSettings {
   enabled?: boolean;
@@ -83,40 +75,29 @@ interface ParsedMicroManager {
   instructions?: string;
 }
 
-interface ParsedYaml {
+export interface ParsedMicroManagerConfig {
   settings: PartialSettings;
   instructions?: string;
   managers: ParsedMicroManager[];
 }
 
-export interface MicroManagerConfigDiscoveryOptions {
-  cwd: string;
-  agentDir: string;
-  includeProject: boolean;
-  configDirName?: string;
+/** One configuration file as a host found it, in load order (user first, then root to cwd). */
+export type MicroManagerConfigFile =
+  | { path: string; level: "user" | "project"; kind: "yaml" | "markdown"; text: string }
+  | { path: string; level: "user" | "project"; error: string };
+
+export interface MicroManagerConfigBuildOptions {
+  projectConfigDetected: boolean;
 }
 
-export async function hasProjectMicroManagerCandidate(
-  cwd: string,
-  configDirName = CONFIG_DIR_NAME,
-): Promise<boolean> {
-  const dirs = await projectDirectories(cwd);
-  for (const dir of dirs) {
-    for (const location of [dir, path.join(dir, configDirName)]) {
-      for (const filename of ["MICRO_MANAGER.yml", "MICRO_MANAGER.yaml", "MICRO_MANAGER.md"]) {
-        if (await pathExists(path.join(location, filename))) return true;
-      }
-    }
-  }
-  return false;
-}
-
-export async function discoverMicroManagerConfiguration(
-  options: MicroManagerConfigDiscoveryOptions,
-): Promise<MicroManagerConfiguration> {
-  const configDirName = options.configDirName ?? CONFIG_DIR_NAME;
-  const projectConfigDetected = await hasProjectMicroManagerCandidate(options.cwd, configDirName);
-  const candidates = await collectCandidates(options.cwd, options.agentDir, options.includeProject, configDirName);
+/**
+ * Merges configuration files into one validated configuration. A bad file becomes a
+ * warning in `errors` and the rest still load.
+ */
+export function buildMicroManagerConfiguration(
+  files: readonly MicroManagerConfigFile[],
+  options: MicroManagerConfigBuildOptions,
+): MicroManagerConfiguration {
   const settingsPatch: PartialSettings = {};
   const managerMap = new Map<string, ParsedMicroManager>();
   const sharedInstructions: string[] = [];
@@ -125,17 +106,20 @@ export async function discoverMicroManagerConfiguration(
   const errors: string[] = [];
   let projectConfigLoaded = false;
 
-  for (const candidate of candidates) {
+  for (const file of files) {
+    if ("error" in file) {
+      errors.push(`${file.path}: ${file.error}`);
+      continue;
+    }
+    sources.push(file.path);
+    if (file.level === "project") projectConfigLoaded = true;
     try {
-      const content = await readBoundedRegularFile(candidate.path);
-      sources.push(candidate.path);
-      if (candidate.level === "project") projectConfigLoaded = true;
-      if (candidate.kind === "markdown") {
-        appendPriorityBlock(content, priorityBlocks);
+      if (file.kind === "markdown") {
+        appendPriorityBlock(file.text, priorityBlocks);
         continue;
       }
 
-      const parsed = parseConfigYaml(content, candidate.path);
+      const parsed = parseConfigYaml(file.text, file.path);
       Object.assign(settingsPatch, parsed.settings);
       if (parsed.instructions) sharedInstructions.push(parsed.instructions);
       for (const manager of parsed.managers) {
@@ -144,7 +128,7 @@ export async function discoverMicroManagerConfiguration(
         managerMap.set(slug, manager);
       }
     } catch (error) {
-      errors.push(`${candidate.path}: ${errorMessage(error)}`);
+      errors.push(`${file.path}: ${errorMessage(error)}`);
     }
   }
 
@@ -156,7 +140,7 @@ export async function discoverMicroManagerConfiguration(
     priorityBlocks,
     sources,
     errors,
-    projectConfigDetected,
+    projectConfigDetected: options.projectConfigDetected,
     projectConfigLoaded,
   };
   const instructions = sharedInstructions.join("\n\n").trim();
@@ -164,10 +148,15 @@ export async function discoverMicroManagerConfiguration(
   return result;
 }
 
-export function parseConfigYaml(content: string, source = "MICRO_MANAGER.yml"): ParsedYaml {
-  const document = parseDocument(content, { prettyErrors: true, strict: true, uniqueKeys: true });
+/** Parses strict YAML and validates it. Throws on the first syntax error, invalid key, or value. */
+export function parseConfigYaml(content: string, source = "MICRO_MANAGER.yml"): ParsedMicroManagerConfig {
+  const document = parseDocument(content, { prettyErrors: true, strict: true, uniqueKeys: true, logLevel: "error" });
   if (document.errors.length > 0) throw new Error(document.errors.map((error) => error.message).join("; "));
-  const value: unknown = document.toJS({ maxAliasCount: 20 });
+  return parseMicroManagerConfigValue(document.toJS({ maxAliasCount: 20 }), source);
+}
+
+/** Validates one parsed YAML document. Throws on the first invalid key or value. */
+export function parseMicroManagerConfigValue(value: unknown, source = "MICRO_MANAGER.yml"): ParsedMicroManagerConfig {
   if (value === null || value === undefined) return { settings: {}, managers: [] };
   if (!isRecord(value)) throw new Error("expected a YAML mapping");
   assertKnownKeys(value, TOP_LEVEL_KEYS, source);
@@ -193,7 +182,7 @@ export function parseConfigYaml(content: string, source = "MICRO_MANAGER.yml"): 
   if ("max_attempts" in value) settings.maxAttempts = integerValue(value.max_attempts, "max_attempts", 1, 3);
   if ("immune_turns" in value) settings.immuneTurns = integerValue(value.immune_turns, "immune_turns", 0, 20);
 
-  const result: ParsedYaml = { settings, managers: [] };
+  const result: ParsedMicroManagerConfig = { settings, managers: [] };
   if ("instructions" in value) result.instructions = nonEmptyString(value.instructions, "instructions");
   if ("managers" in value) {
     if (!Array.isArray(value.managers)) throw new Error("managers must be an array");
@@ -268,68 +257,6 @@ function mergeSettings(patch: PartialSettings): MicroManagerSettings {
   return settings;
 }
 
-async function collectCandidates(
-  cwd: string,
-  agentDir: string,
-  includeProject: boolean,
-  configDirName: string,
-): Promise<ConfigCandidate[]> {
-  const candidates: ConfigCandidate[] = [];
-  await appendLocationCandidates(candidates, agentDir, "user");
-  if (!includeProject) return candidates;
-
-  const dirs = await projectDirectories(cwd);
-  for (const dir of dirs) {
-    await appendLocationCandidates(candidates, dir, "project");
-    await appendLocationCandidates(candidates, path.join(dir, configDirName), "project");
-  }
-  return candidates;
-}
-
-async function appendLocationCandidates(
-  candidates: ConfigCandidate[],
-  location: string,
-  level: ConfigCandidate["level"],
-): Promise<void> {
-  const yml = path.join(location, "MICRO_MANAGER.yml");
-  const yaml = path.join(location, "MICRO_MANAGER.yaml");
-  if (await pathExists(yml)) candidates.push({ path: yml, level, kind: "yaml" });
-  else if (await pathExists(yaml)) candidates.push({ path: yaml, level, kind: "yaml" });
-
-  const markdown = path.join(location, "MICRO_MANAGER.md");
-  if (await pathExists(markdown)) candidates.push({ path: markdown, level, kind: "markdown" });
-}
-
-async function projectDirectories(cwd: string): Promise<string[]> {
-  const resolved = path.resolve(cwd);
-  const walked: string[] = [];
-  let current = resolved;
-  while (true) {
-    walked.push(current);
-    if (await pathExists(path.join(current, ".git"))) return walked.reverse();
-    const parent = path.dirname(current);
-    if (parent === current) return [resolved];
-    current = parent;
-  }
-}
-
-async function readBoundedRegularFile(filePath: string): Promise<string> {
-  const stat = await fs.lstat(filePath);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("must be a regular file, not a symlink");
-  if (stat.size > MAX_CONFIG_BYTES) throw new Error(`exceeds ${MAX_CONFIG_BYTES} bytes`);
-  return fs.readFile(filePath, "utf8");
-}
-
-async function pathExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.lstat(filePath);
-    return true;
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return false;
-    throw error;
-  }
-}
-
 function assertKnownKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>, field: string): void {
   const unknown = Object.keys(value).filter((key) => !allowed.has(key));
   if (unknown.length > 0) throw new Error(`${field} contains unknown ${unknown.length === 1 ? "key" : "keys"}: ${unknown.join(", ")}`);
@@ -348,8 +275,8 @@ function toolsValue(value: unknown, field: string): MicroManagerToolName[] {
 }
 
 function thinkingValue(value: unknown, field: string): ThinkingLevel {
-  if (typeof value !== "string" || !THINKING_LEVELS.has(value as ThinkingLevel)) {
-    throw new Error(`${field} must be one of: ${[...THINKING_LEVELS].join(", ")}`);
+  if (typeof value !== "string" || !THINKING_LEVEL_SET.has(value)) {
+    throw new Error(`${field} must be one of: ${THINKING_LEVELS.join(", ")}`);
   }
   return value as ThinkingLevel;
 }
@@ -384,10 +311,6 @@ function integerValue(value: unknown, field: string, minimum: number, maximum: n
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNodeError(value: unknown): value is NodeJS.ErrnoException {
-  return value instanceof Error && "code" in value;
 }
 
 function errorMessage(value: unknown): string {

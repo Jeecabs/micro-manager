@@ -10,7 +10,7 @@ Choose a Semantic Versioning number in `X.Y.Z` form. The Git tag must be `vX.Y.Z
 
 ## Prepare and tag the release
 
-1. Update `version` in `package.json` to `X.Y.Z`.
+1. Update `version` in `package.json` and `.claude-plugin/plugin.json` to `X.Y.Z`. `pnpm verify` fails while they differ.
 2. Move the relevant entries from `CHANGELOG.md` under a new `X.Y.Z` release heading.
 3. Add the release date and comparison links to `CHANGELOG.md`.
 4. Install locked dependencies with `pnpm install --frozen-lockfile`.
@@ -24,7 +24,7 @@ Choose a Semantic Versioning number in `X.Y.Z` form. The Git tag must be `vX.Y.Z
 7. Commit the version and changelog changes.
 
    ```sh
-   git add package.json CHANGELOG.md
+   git add package.json .claude-plugin/plugin.json CHANGELOG.md
    git commit -m "chore: release vX.Y.Z"
    ```
 
@@ -77,4 +77,11 @@ Until then, users install from GitHub:
 
 ```sh
 pi install git:github.com/Jeecabs/micro-manager
+```
+
+Claude Code users install from the repository's own marketplace, so a pushed commit on the main branch reaches them through `claude plugin update`.:
+
+```text
+/plugin marketplace add Jeecabs/micro-manager
+/plugin install micro-manager@micro-manager
 ```
