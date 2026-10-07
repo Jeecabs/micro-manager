@@ -14,7 +14,7 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Severity-aware, duplicate-suppressed report delivery.
 - Session status, configuration, reload, transcript, and enable/disable commands.
 
-- Claude Code plugin with the same review core, configuration files, and commands. Notes wait in the band above the prompt under a face that escalates with severity; the footer face moves its eyes during review and reacts when it ends.
+- Claude Code plugin with the same review core, configuration files, and commands. Notes appear in the transcript as they enter Claude's context, under a face that escalates with severity; the footer face moves its eyes during review and reacts when it ends.
 
 ### Changed
 

@@ -68,7 +68,7 @@ enabled: true
 
 Then run `/micro-manager reload`, or start a new session. `/micro-manager on` enables review for the current session only. Managers review with Sonnet at Claude Code's lowest effort unless `model` or `thinking` says otherwise.
 
-Notes appear in the band above the prompt until your next prompt. The face escalates with severity: `¬_¬` for a nit, `ò_ó` for a concern, and `Ò_Ó` for a blocker. The footer face works as in Pi; see [Read the face](#read-the-face). A warning line appears only when a review fails or no model resolves.
+Each note appears in the transcript as it enters Claude's context. The face escalates with severity: `¬_¬` for a nit, `ò_ó` for a concern, and `Ò_Ó` for a blocker. The footer face works as in Pi; see [Read the face](#read-the-face). A warning line appears only when a review fails or no model resolves.
 
 See [Configuration](./docs/configuration.md) for model selectors, named managers, limits, file precedence, and project trust.
 
@@ -175,7 +175,7 @@ Delivery depends on severity and primary-agent state:
 
 Print and JSON modes buffer reports until the primary agent settles. They wait for review work for at most 60 seconds. They never start a hidden primary turn. JSON mode emits a final micro-manager card. Print mode keeps primary stdout unchanged and stores report metadata in the Pi session.
 
-In Claude Code, the band shows at most three notes and keeps the most severe. Every note is also stored as a transcript notice, which the verbose transcript (ctrl+o) shows. The model reads each note as a hidden message at its next step. A steer reaches a running turn at its next model request. A blocker on an idle session starts a turn. In `claude -p`, stdout stays unchanged and notes are stored as transcript notices. Claude Code allows a hook 10 seconds, so a `-p` run waits at most 8 seconds for its final review.
+In Claude Code, each note appears as a line in the transcript when it is delivered, and is stored as a transcript notice that the verbose transcript (ctrl+o) keeps. The model reads each note as a hidden message at its next step. A steer reaches a running turn at its next model request. A queued follow-up note reaches the model with your next prompt, without starting a turn of its own. A blocker on an idle session starts a turn. In `claude -p`, stdout stays unchanged and notes are stored as transcript notices. Claude Code allows a hook 10 seconds, so a `-p` run waits at most 8 seconds for its final review.
 
 See [Architecture](./docs/architecture.md) for lifecycle, context, delivery, and limit details.
 

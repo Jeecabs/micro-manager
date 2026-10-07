@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runWorkspaceTool } from "../src/core/tools.ts";
-import { ClaudeCodeMicroManager, trimBand } from "../src/claude-code/adapter.ts";
+import { ClaudeCodeMicroManager } from "../src/claude-code/adapter.ts";
 import type { ClaudeCodeApi, ClaudeCodeModelRequest, ClaudeCodeModelResult } from "../src/claude-code/api.ts";
-import { formatCard, worstSeverity } from "../src/claude-code/card.ts";
+import { formatCard } from "../src/claude-code/card.ts";
 import { ClaudeCodeHistory, type AppendedRow } from "../src/claude-code/history.ts";
 import { resolveClaudeCodeModel } from "../src/claude-code/model.ts";
 import { dirname, join, normalize, resolve } from "../src/claude-code/paths.ts";
@@ -25,6 +25,7 @@ function fakeApi(options: FakeOptions = {}) {
   const calls = {
     appends: [] as Array<{ type: string; text: string }>,
     submits: [] as string[],
+    logs: [] as string[],
     statuses: [] as Array<string | undefined>,
     redraws: 0,
     requests: [] as ClaudeCodeModelRequest[],
@@ -79,6 +80,7 @@ function fakeApi(options: FakeOptions = {}) {
     async submit(text) {
       calls.submits.push(text);
     },
+    log: (text) => calls.logs.push(text),
     status: (text) => calls.statuses.push(text),
     redraw: () => calls.redraws++,
     sleep,
@@ -124,25 +126,12 @@ test("paths fold dots and keep each platform's separators", () => {
   assert.equal(dirname("C:\\"), "C:\\");
 });
 
-test("the record holds one line per note and the face follows the worst note", () => {
+test("the record holds one line per note under a face that escalates with severity", () => {
   const notes = [
     { note: "Run the\nfocused test.", severity: "concern", manager: "Tests" },
     { note: "Rename x.", severity: "nit" },
   ] as const;
-  assert.equal(formatCard(notes), "¬_¬ ! [Tests] Run the focused test.\n¬_¬ · Rename x.");
-  assert.equal(worstSeverity(notes), "concern");
-  assert.equal(worstSeverity([{ note: "x" }]), "nit");
-});
-
-test("the band drops the oldest of the mildest notes first", () => {
-  const band = trimBand([
-    { note: "old nit", severity: "nit" },
-    { note: "blocker", severity: "blocker" },
-    { note: "concern", severity: "concern" },
-    { note: "new nit", severity: "nit" },
-    { note: "newest nit", severity: "nit" },
-  ]);
-  assert.deepEqual(band.map((note) => note.note), ["blocker", "concern", "newest nit"]);
+  assert.equal(formatCard(notes), "ò_ó ! [Tests] Run the focused test.\n¬_¬ · Rename x.");
 });
 
 test("history keeps main-loop evidence and drops thinking, subagents, and its own rows", () => {
@@ -211,7 +200,7 @@ test("workspace reads numbered lines and searches with ripgrep inside the root",
   await assert.rejects(text("read", { path: "link" }), /link outside the trusted workspace/);
 });
 
-test("steers a concern into a running turn and shows it in the band until the next prompt", async () => {
+test("steers a concern into a running turn and shows it in the transcript", async () => {
   const { api, calls } = fakeApi({ files: ENABLED, replies: [report("Await the flush.", "concern")] });
   const manager = new ClaudeCodeMicroManager("micro-manager", api);
   await manager.start();
@@ -226,18 +215,13 @@ test("steers a concern into a running turn and shows it in the band until the ne
   assert.equal(calls.requests[0]?.model, "haiku");
   assert.equal(calls.requests[0]?.effort, "low");
   assert.match(calls.requests[0]?.prompt ?? "", /Ship it\.[\s\S]*"tool":"Bash"/);
-  assert.deepEqual(calls.appends[0], { type: "system", text: "¬_¬ ! Await the flush." });
+  assert.deepEqual(calls.logs, ["ò_ó ! Await the flush."]);
+  assert.deepEqual(calls.appends[0], { type: "system", text: "ò_ó ! Await the flush." });
   assert.equal(calls.appends[1]?.type, "user");
   assert.match(calls.appends[1]?.text ?? "", /<micro-manager-note severity="concern"/);
   assert.deepEqual(calls.submits, []);
-  assert.deepEqual(manager.band().map((note) => note.note), ["Await the flush."]);
   assert.deepEqual(manager.face(), { text: "(¬_¬) hm.", tone: "warning", animating: false, state: "watching" });
   assert.deepEqual(calls.statuses, [], "a healthy manager keeps the warning line clear");
-
-  const redraws = calls.redraws;
-  manager.promptSubmitted();
-  assert.deepEqual(manager.band(), []);
-  assert.ok(calls.redraws > redraws);
   manager.dispose();
   assert.equal(manager.face(), undefined);
 });
@@ -259,6 +243,7 @@ test("wakes an idle session for a blocker and holds nits until the turn ends", a
   await waitFor(() => calls.requests.length === 1);
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(calls.appends.length, 0, "a nit waits for the running turn");
+  assert.deepEqual(calls.logs, []);
 
   manager.record(row("a1", "response", [{ type: "text", text: "Done." }]));
   await manager.stepEnded(true);
@@ -269,8 +254,10 @@ test("wakes an idle session for a blocker and holds nits until the turn ends", a
     calls.appends.slice(0, 2).map((entry) => entry.type),
     ["system", "user"],
   );
+  assert.equal(calls.logs[0], "¬_¬ · Tidy the import.");
   await waitFor(() => calls.submits.length === 1);
   assert.match(calls.submits[0] ?? "", /severity="blocker"/);
+  assert.deepEqual(calls.logs, ["¬_¬ · Tidy the import.", "Ò_Ó ✗ The migration drops live data."]);
   manager.dispose();
 });
 
@@ -282,9 +269,9 @@ test("print runs buffer notes and record them as a notice before the final step 
   manager.record(row("u1", "prompt", [{ type: "text", text: "Generate it." }]));
   await manager.stepEnded(true);
 
-  assert.deepEqual(calls.appends, [{ type: "system", text: "¬_¬ ✗ Output is invalid." }]);
+  assert.deepEqual(calls.appends, [{ type: "system", text: "Ò_Ó ✗ Output is invalid." }]);
   assert.deepEqual(calls.submits, []);
-  assert.deepEqual(manager.band(), [], "print runs have no band");
+  assert.deepEqual(calls.logs, [], "print runs keep the live transcript out of it");
   manager.dispose();
 });
 

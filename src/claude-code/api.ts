@@ -22,11 +22,13 @@ export interface ClaudeCodeApi {
    * model never reads, kept in the transcript file and shown only in the verbose transcript.
    */
   append(type: "user" | "system", text: string): Promise<void>;
-  /** Starts a turn with this prompt once the session is idle. */
+  /** Starts a turn with this prompt once the session is idle; the transcript shows it as the plugin's. */
   submit(text: string): Promise<void>;
+  /** `$.ui.log`: one dim line in the live transcript, which the model never reads. */
+  log(text: string): void;
   /** A warning line under the prompt on every surface; undefined removes it. */
   status(text: string | undefined): void;
-  /** Redraws the band and the footer face from the adapter's current state. */
+  /** Redraws the footer face from the adapter's current state. */
   redraw(): void;
   sleep(ms: number, signal: AbortSignal): Promise<void>;
   /** `$.clock.every`: calls `fn` every `ms` until cancelled or the module reloads. */

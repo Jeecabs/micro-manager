@@ -1,7 +1,6 @@
 import { REVIEW_FRAME_MS } from "../core/face.ts";
 import { runMicroManagerCommand } from "../core/commands.ts";
 import { MicroManagerSession, type Delivery, type FooterStatus, type MicroManagerHost } from "../core/session.ts";
-import type { MicroManagerNote } from "../core/types.ts";
 import type { ClaudeCodeApi } from "./api.ts";
 import { formatCard } from "./card.ts";
 import { CLAUDE_CODE_CONFIG_DIR_NAME, discoverClaudeCodeConfiguration } from "./config.ts";
@@ -12,9 +11,6 @@ import { createClaudeCodeWorkspace } from "./workspace.ts";
 // Claude Code gives a hook 10 seconds; a `claude -p` run waits this long for the final review.
 const HEADLESS_SETTLE_MS = 8_000;
 const BLINK_INTERVAL_MS = REVIEW_FRAME_MS;
-// The band stays glanceable; every note is still in the transcript and with the model.
-const BAND_LIMIT = 3;
-const SEVERITY_RANK = { nit: 0, concern: 1, blocker: 2 } as const;
 
 /**
  * The Micro Manager inside one Claude Code session. `register.ts` forwards engine events
@@ -28,7 +24,6 @@ export class ClaudeCodeMicroManager {
   #headless = false;
   #busy = false;
   #followUps: Delivery[] = [];
-  #band: readonly MicroManagerNote[] = [];
   #problem: string | undefined;
   #blink: { cancel(): void } | undefined;
   #blinkFrame = 0;
@@ -53,21 +48,9 @@ export class ClaudeCodeMicroManager {
     if (this.#history.record(row) === "compacted") this.#session?.reset();
   }
 
-  /** Notes for the band above the prompt, oldest first; they stay until the person's next prompt. */
-  band(): readonly MicroManagerNote[] {
-    return this.#band;
-  }
-
   /** The footer face; undefined before the session starts. */
   face(): FooterStatus | undefined {
     return this.#disposed ? undefined : this.#session?.footer(this.#blinkFrame);
-  }
-
-  /** The person sent a prompt, so they have seen the band. */
-  promptSubmitted(): void {
-    if (this.#band.length === 0) return;
-    this.#band = [];
-    this.#api.redraw();
   }
 
   /** A main-loop turn began. */
@@ -90,6 +73,7 @@ export class ClaudeCodeMicroManager {
     this.#busy = false;
     const held = this.#followUps;
     this.#followUps = [];
+    // ponytail: a held nit waits for the model's next step rather than starting a turn of its own
     for (const delivery of held) void this.#deliver({ ...delivery, kind: "show" });
   }
 
@@ -97,9 +81,7 @@ export class ClaudeCodeMicroManager {
   cleared(): void {
     this.#history.clear();
     this.#followUps = [];
-    this.#band = [];
     this.#session?.reset();
-    this.#api.redraw();
   }
 
   async command(args: string): Promise<string> {
@@ -116,7 +98,6 @@ export class ClaudeCodeMicroManager {
     this.#session?.dispose();
     this.#session = undefined;
     this.#stopBlink();
-    this.#band = [];
     this.#api.status(undefined);
     this.#api.redraw();
   }
@@ -138,10 +119,8 @@ export class ClaudeCodeMicroManager {
       this.#followUps.push(delivery);
       return;
     }
-    if (delivery.kind !== "record") {
-      this.#band = trimBand([...this.#band, ...delivery.notes]);
-      this.#api.redraw();
-    }
+    // Each note shows in the transcript as it enters the model's context, not in a tray.
+    if (delivery.kind !== "record") for (const note of delivery.notes) this.#api.log(formatCard([note]));
     // ponytail: a failed append drops that note; the engine refuses appends only to runs no plugin may shape
     try {
       await this.#api.append("system", formatCard(delivery.notes));
@@ -188,14 +167,4 @@ export class ClaudeCodeMicroManager {
     const project = `${this.#cwd}/${CLAUDE_CODE_CONFIG_DIR_NAME}`;
     return `Create ${project}/MICRO_MANAGER.yml or ~/${CLAUDE_CODE_CONFIG_DIR_NAME}/MICRO_MANAGER.yml, then run /micro-manager reload:\n\nenabled: true\nthinking: low\ntools: [read, grep, find, ls]\nmanagers:\n  - name: Architecture\n    # model: opus\n    instructions: |\n      Watch module seams and public-interface growth.\n\nManagers review with Sonnet at low effort unless model says otherwise. Optional review priorities belong in MICRO_MANAGER.md beside it.`;
   }
-}
-
-/** Drops the oldest of the mildest notes first, so a later nit never hides an unread blocker. */
-export function trimBand(notes: MicroManagerNote[]): MicroManagerNote[] {
-  const rank = (note: MicroManagerNote) => SEVERITY_RANK[note.severity ?? "nit"];
-  while (notes.length > BAND_LIMIT) {
-    const mildest = Math.min(...notes.map(rank));
-    notes.splice(notes.findIndex((note) => rank(note) === mildest), 1);
-  }
-  return notes;
 }

@@ -1,17 +1,12 @@
 import type { Register } from "claude-code";
-import { SEVERITY_GLYPHS } from "../core/message-format.ts";
 import type { FooterStatus } from "../core/session.ts";
 import { ClaudeCodeMicroManager } from "./adapter.ts";
-import { SEVERITY_FACES, worstSeverity } from "./card.ts";
 
 // The Claude Code entry point. A mod may only spell `$` at its call sites, so this file
 // hands the adapter closures over `session.start`'s `$` and forwards events; nothing else.
 
 const PLUGIN = "micro-manager";
-const SEVERITY_COLORS = { nit: "subtle", concern: "warning", blocker: "error" } as const;
 const FACE_COLORS = { accent: "claude", dim: "inactive", muted: "subtle", warning: "warning", error: "error" } as const;
-// ponytail: a longer manager name is cut so the notes keep their column
-const MANAGER_COLUMNS = 16;
 
 let manager: ClaudeCodeMicroManager | undefined;
 
@@ -39,6 +34,7 @@ export const register: Register = (on) => {
       submit: async (text) => {
         await $.prompt.submit({ text });
       },
+      log: (text) => $.ui.log(text),
       status: (text) => $.ui.status(text),
       redraw: () => $.ui.invalidate("ui.render"),
       sleep: (ms, signal) => $.clock.sleep(ms, { signal }),
@@ -61,11 +57,6 @@ export const register: Register = (on) => {
     } catch {
       // Evidence is best effort; the row is stored whatever happens here.
     }
-    return next(e);
-  });
-
-  on("prompt.submit", async ($, e, next) => {
-    if (e.origin.kind === "composer" || e.origin.kind === "bridge") manager?.promptSubmitted();
     return next(e);
   });
 
@@ -109,42 +100,6 @@ export const register: Register = (on) => {
       <Box gap={2}>
         {await next(e)}
         <Text color={faceColor(face)}>{face.text}</Text>
-      </Box>
-    );
-  });
-
-  // Delivered notes wait in the band above the prompt until the person's next prompt.
-  on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
-    const notes = manager?.band() ?? [];
-    if (notes.length === 0 || e.props.hasSurvey || e.props.view.agentId !== undefined) return next(e);
-    const { Box, Markdown, Text } = $.ui.resolve(e);
-    const worst = worstSeverity(notes);
-    const managerWidth = Math.min(MANAGER_COLUMNS, Math.max(0, ...notes.map((note) => note.manager?.length ?? 0)));
-    return (
-      <Box gap={2}>
-        <Text bold color={SEVERITY_COLORS[worst]}>
-          {SEVERITY_FACES[worst]}
-        </Text>
-        <Box flexDirection="column" flexShrink={1}>
-          {notes.map((note, index) => {
-            const severity = note.severity ?? "nit";
-            return (
-              <Box key={`note-${index}`} gap={1}>
-                <Text color={SEVERITY_COLORS[severity]}>{SEVERITY_GLYPHS[severity]}</Text>
-                {managerWidth > 0 ? (
-                  <Box width={managerWidth} flexShrink={0}>
-                    <Text bold wrap="truncate-end">
-                      {note.manager ?? ""}
-                    </Text>
-                  </Box>
-                ) : null}
-                <Box flexShrink={1}>
-                  <Markdown text={note.note} />
-                </Box>
-              </Box>
-            );
-          })}
-        </Box>
       </Box>
     );
   });

@@ -123,7 +123,7 @@ Use JSON mode or inspect the saved Pi session when automation must consume repor
 
 Run `/plugin` and confirm that `micro-manager` is installed and enabled. If you installed it from a shell during a session, run `/reload-plugins`.
 
-The band above the prompt shows notes until your next prompt, then clears. Earlier notes stay in the verbose transcript; press ctrl+o to see them.
+Notes appear as lines in the transcript once delivered. A nit that arrives during a turn waits for that turn to end. Notes from earlier sessions stay in the verbose transcript; press ctrl+o to see them.
 
 A warning line under the prompt names a failed review or an unresolved model. Run `/micro-manager status` for the error. A manager whose model names another provider, such as `openai/gpt-5.4`, cannot review in Claude Code.
 
