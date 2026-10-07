@@ -1,5 +1,5 @@
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Model } from "@earendil-works/pi-ai";
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 export const MICRO_MANAGER_TOOL_NAMES = ["read", "grep", "find", "ls"] as const;
 export type MicroManagerToolName = (typeof MICRO_MANAGER_TOOL_NAMES)[number];
@@ -57,12 +57,14 @@ export type MicroManagerRuntimeState = "running" | "paused" | "error" | "no_mode
 export interface MicroManagerRuntimeStats {
   name: string;
   state: MicroManagerRuntimeState;
-  model?: Model<any>;
+  /** The review model's host label, such as `anthropic/claude-sonnet-4-6`. */
+  model?: string;
   backlog: number;
   turns: number;
   inputTokens: number;
   outputTokens: number;
-  cost: number;
+  /** Absent until the host reports a cost; some hosts report tokens only. */
+  cost?: number;
   lastError?: string;
 }
 
@@ -76,7 +78,7 @@ export interface MicroManagerStatusManager {
   turns: number;
   inputTokens: number;
   outputTokens: number;
-  cost: number;
+  cost?: number;
   lastError?: string;
 }
 

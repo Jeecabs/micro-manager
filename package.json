@@ -40,14 +40,13 @@
     "image": "https://raw.githubusercontent.com/Jeecabs/micro-manager/main/assets/micro-manager.png"
   },
   "scripts": {
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.portable.json",
     "test": "node --test --experimental-strip-types tests/*.test.ts",
     "pack:check": "npm pack --dry-run",
     "verify": "pnpm check && pnpm test && pnpm pack:check",
-    "prepublishOnly": "pnpm check && pnpm test"
-  },
-  "dependencies": {
-    "yaml": "^2.8.1"
+    "prepublishOnly": "pnpm check && pnpm test",
+    "vendor:yaml": "esbuild scripts/yaml-entry.ts --bundle --format=esm --platform=neutral --main-fields=module,main --minify --legal-comments=none --log-level=warning --outfile=src/vendor/yaml.js '--banner:js=/*! yaml 2.9.0 (https://github.com/eemeli/yaml), bundled by scripts/yaml-entry.ts. Copyright Eemeli Aro <eemeli@gmail.com>. Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies. THE SOFTWARE IS PROVIDED \"AS IS\" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. */'",
+    "check:claude-code": "tsc -p tsconfig.claude-code.json"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
@@ -62,8 +61,10 @@
     "@earendil-works/pi-coding-agent": "^0.84.0",
     "@earendil-works/pi-tui": "^0.84.0",
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
     "typebox": "^1.1.38",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "yaml": "^2.8.1"
   },
   "engines": {
     "node": ">=22.12.0"

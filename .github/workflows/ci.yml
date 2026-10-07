@@ -35,3 +35,6 @@ jobs:
 
       - name: Verify
         run: pnpm verify
+
+      - name: Check the bundled YAML parser is current
+        run: pnpm vendor:yaml && git diff --exit-code -- src/vendor
