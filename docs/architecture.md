@@ -42,7 +42,7 @@ The only direct package dependency is `yaml`, which the Pi adapter uses to parse
 | [`src/core/text-protocol.ts`](../src/core/text-protocol.ts) | Turn one-prompt text completion into a `ReviewModel` with JSON tool calls, for hosts without native tool calling. |
 | [`src/core/config-discovery.ts`](../src/core/config-discovery.ts) | Find and read configuration files through a host file-system port, with one load order and one set of file rules. |
 | [`src/core/commands.ts`](../src/core/commands.ts) | Run `/micro-manager` actions; hosts only show the result. |
-| [`src/claude-code/register.tsx`](../src/claude-code/register.tsx) | Build the engine port from closures over `$`, forward engine events, and draw the note band and footer face. |
+| [`src/claude-code/register.tsx`](../src/claude-code/register.tsx) | Build the engine port from closures over `$`, forward engine events, and draw the footer face. |
 | [`src/claude-code/adapter.ts`](../src/claude-code/adapter.ts) | Implement `MicroManagerHost` for one Claude Code session: delivery, status, turn boundaries, and headless settlement. |
 | [`src/claude-code/history.ts`](../src/claude-code/history.ts) | Build review evidence from `session.append` rows. |
 | [`src/claude-code/workspace.ts`](../src/claude-code/workspace.ts) | Run `read` and `ls` through `$.fs`, and `grep` and `find` through ripgrep. |
@@ -75,7 +75,7 @@ The Claude Code adapter implements the same port:
 | `workspace` | `$.fs` for `read` and `ls`; ripgrep through `$.process.run` for `grep` and `find`. |
 | `history()` | Main-conversation rows from `session.append`, minus thinking, attachments, notices, and its own rows. |
 | `primary()` | `-p` when no surface draws; busy between `turn.start` and `turn.complete`. |
-| `deliver(delivery)` | The band above the prompt, a notice row for the record, and a hidden user row the model reads, or `$.prompt.submit` to wake. |
+| `deliver(delivery)` | A `$.ui.log` line per note, a notice row for the record, and a hidden user row the model reads, or `$.prompt.submit` to wake. |
 | `changed()` | `$.ui.status`. |
 | `sleep(ms, signal)` | `$.clock.sleep`. |
 
@@ -83,7 +83,7 @@ A mod may not store or pass `$`. `register.tsx` therefore builds a `ClaudeCodeAp
 
 Claude Code's turn boundary is the end of each main-loop model response, in `turn.step`: the response's rows are stored by then, with the previous step's tool results. In `-p`, the final step also waits for review there, because Claude Code stores a headless run's rows only while its turn is open.
 
-Claude Code's live view hides notice rows that a plugin appends; only the verbose transcript draws them. So the adapter draws notes in the band above the prompt (`AbovePrompt`) and its face beside the footer's mode labels (`SessionMode`), and redraws both with `$.ui.invalidate`. The band keeps at most three notes, dropping the oldest of the mildest first, and clears on the person's next prompt. The notice rows stay as the record that the transcript file and `claude -p` keep.
+Claude Code's live view hides notice rows that a plugin appends; only the verbose transcript draws them. So the adapter writes each note to the live transcript with `$.ui.log` at the moment it enters the model's context, and draws its face beside the footer's mode labels (`SessionMode`), redrawn with `$.ui.invalidate`. The notice rows stay as the record that the transcript file and `claude -p` keep. A follow-up note held during a turn is delivered as a hidden row when the turn ends, so the model reads it at its next step without a turn of its own; only a blocker on an idle session starts one.
 
 A `ReviewModel` returns each reply with an optional `native` record. The core stores it with the private conversation and hands it back on later steps, so a provider receives its own thinking signatures and reasoning items intact.
 
@@ -225,7 +225,7 @@ Tests follow the module boundaries:
 - [`tests/transcript.test.ts`](../tests/transcript.test.ts) covers deltas, rewrites, redaction, omission, and hard bounds.
 - [`tests/workspace-tools.test.ts`](../tests/workspace-tools.test.ts) covers path and symbolic-link confinement.
 - [`tests/text-protocol.test.ts`](../tests/text-protocol.test.ts) covers prompt rendering, reply extraction, and escaping.
-- [`tests/claude-code.test.ts`](../tests/claude-code.test.ts) covers the Claude Code paths, the band, history, workspace, model selectors, and delivery through an in-memory engine port.
+- [`tests/claude-code.test.ts`](../tests/claude-code.test.ts) covers the Claude Code paths, the transcript lines, history, workspace, model selectors, and delivery through an in-memory engine port.
 - [`tests/package.test.ts`](../tests/package.test.ts) covers both entry points and the shared version.
 - [`tests/renderer.test.ts`](../tests/renderer.test.ts) covers card sanitization and display.
 
