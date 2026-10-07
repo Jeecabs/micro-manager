@@ -2,6 +2,12 @@ import type { MicroManagerMessageDetails, MicroManagerNote, MicroManagerSeverity
 
 const MICRO_MANAGER_GUIDANCE = "weigh, don't blindly obey";
 
+// ponytail: ASCII/Latin-1 face — Kannada ಠ falls back to non-mono fonts and breaks alignment
+export const MICRO_MANAGER_GLYPH = "¬_¬";
+
+// ponytail: gutter glyphs stay inside Pi's own glyph set so they share its font fallback behaviour
+export const SEVERITY_GLYPHS: Record<MicroManagerSeverity, string> = { nit: "·", concern: "!", blocker: "✗" };
+
 export function normalizeMicroManagerText(value: string): string | undefined {
   const normalized = value
     .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")

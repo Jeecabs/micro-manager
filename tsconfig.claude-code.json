@@ -1,0 +1,8 @@
+{
+  "extends": "./.claude-plugin/types/tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "exactOptionalPropertyTypes": true
+  },
+  "include": ["src/claude-code/register.tsx"]
+}

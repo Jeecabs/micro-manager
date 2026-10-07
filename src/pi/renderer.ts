@@ -1,7 +1,7 @@
 import { keyText, type EntryRenderer, type MessageRenderer, type Theme } from "@earendil-works/pi-coding-agent";
 import { Box, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
-import { FACES } from "./face.ts";
-import { normalizeMicroManagerText } from "./message-format.ts";
+import { FACES } from "../core/face.ts";
+import { normalizeMicroManagerText, SEVERITY_GLYPHS } from "../core/message-format.ts";
 import {
   MICRO_MANAGER_SEVERITIES,
   type MicroManagerMessageDetails,
@@ -11,12 +11,10 @@ import {
   type MicroManagerSeverity,
   type MicroManagerStatusManager,
   type MicroManagerStatusSnapshot,
-} from "./types.ts";
+} from "../core/types.ts";
 
 type Color = Parameters<Theme["fg"]>[0];
 
-// ponytail: gutter glyphs stay inside Pi's own glyph set so they share its font fallback behaviour
-const SEVERITY_GLYPHS: Record<MicroManagerSeverity, string> = { nit: "·", concern: "!", blocker: "✗" };
 const SEVERITY_RANK: Record<MicroManagerSeverity, number> = { nit: 0, concern: 1, blocker: 2 };
 const COLLAPSED_NOTES = 3;
 const COLLAPSED_NOTE_LINES = 2;
@@ -213,7 +211,7 @@ class StatusCard implements Component {
           ? `${compactNumber(manager.inputTokens)} in / ${compactNumber(manager.outputTokens)} out`
           : `${compactNumber(manager.inputTokens + manager.outputTokens)} tokens`,
       );
-      parts.push(`$${manager.cost.toFixed(manager.cost < 0.1 ? 4 : 2)}`);
+      if (manager.cost !== undefined) parts.push(`$${manager.cost.toFixed(manager.cost < 0.1 ? 4 : 2)}`);
     }
     return parts.filter(Boolean).join(theme.fg("dim", " · "));
   }

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerMicroManagerExtension } from "../src/extension.ts";
-import type { MicroManagerConfiguration, MicroManagerSeverity } from "../src/types.ts";
+import { registerMicroManagerExtension } from "../src/pi/extension.ts";
+import type { MicroManagerConfiguration, MicroManagerSeverity } from "../src/core/types.ts";
 
 const MODEL: Model<"openai-responses"> = {
   id: "primary-model",

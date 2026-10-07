@@ -22,7 +22,11 @@ pnpm install --frozen-lockfile
 pnpm verify
 ```
 
-`pnpm verify` runs the TypeScript check, tests, and an npm package dry run.
+`pnpm verify` runs the TypeScript checks, tests, and an npm package dry run.
+
+Review behavior belongs in `src/core`, which must run in both Node and the Claude Code mod runtime. Keep Pi- and Claude Code-specific code in `src/pi` and `src/claude-code`.
+
+To try the Claude Code plugin from a checkout, run `claude --plugin-dir /absolute/path/to/micro-manager`. Claude Code then writes its API types to `.claude-plugin/types`, and `pnpm check:claude-code` checks the entry point against them. After a `yaml` upgrade, run `pnpm vendor:yaml`.
 
 ## Pull requests
 

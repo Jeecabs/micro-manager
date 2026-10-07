@@ -6,27 +6,86 @@ Run an independent reviewer without patching Pi internals. Keep its tools read-o
 
 ## Package boundary
 
-[`src/index.ts`](../src/index.ts) is the Pi extension entry point. The `pi.extensions` package manifest points to that TypeScript file.
+The code has one core and two host adapters:
 
-The package uses public types and functions from Pi peer dependencies. It does not read private session files or call private compaction APIs. Provider requests pass through Pi's model registry, so Pi keeps responsibility for provider registration and authentication.
+- [`src/core`](../src/core) holds all review behavior. It imports nothing from Pi, Node, or any npm package, and assumes only ES2023 plus `AbortController` and `AbortSignal`. YAML parsing uses [`src/vendor/yaml.js`](../src/vendor/yaml.js), a dependency-free bundle of the `yaml` package that `pnpm vendor:yaml` rebuilds.
+- [`src/pi`](../src/pi) adapts the core to Pi. [`src/index.ts`](../src/index.ts) is the Pi extension entry point, and the `pi.extensions` package manifest points to it.
+- [`src/claude-code`](../src/claude-code) adapts the core to Claude Code mods. [`hooks/hooks.json`](../hooks/hooks.json) names [`register.tsx`](../src/claude-code/register.tsx), and the repository root is the plugin and its marketplace.
 
-The only direct package dependency is `yaml`, which parses configuration files. Pi packages and `typebox` remain peer dependencies.
+`tsconfig.portable.json` checks the core and the Claude Code adapter with no Node or DOM types, so code that the mod runtime cannot run fails `pnpm check`.
+
+The core keeps one implementation of the review loop, limits, redaction, workspace confinement, and delivery policy for every host. A host supplies a small `MicroManagerHost` port and translates its own events into session calls.
+
+The Pi adapter uses public types and functions from Pi peer dependencies. It does not read private session files or call private compaction APIs. Provider requests pass through Pi's model registry, so Pi keeps responsibility for provider registration and authentication.
+
+The only direct package dependency is `yaml`, which the Pi adapter uses to parse configuration files. Pi packages and `typebox` remain peer dependencies.
 
 ## Modules
 
 | Module | Responsibility |
 |---|---|
-| [`src/extension.ts`](../src/extension.ts) | Register hooks, the process flag, the command, and the message renderer. Resolve trust, models, delivery, and status. |
-| [`src/micro-manager-runner.ts`](../src/micro-manager-runner.ts) | Own one review conversation, queue, model loop, tool execution, retry policy, timeout, and usage. |
-| [`src/config.ts`](../src/config.ts) | Discover and validate user and trusted project `MICRO_MANAGER` files. |
-| [`src/transcript.ts`](../src/transcript.ts) | Track primary history, render deltas, bound input, and redact common secrets. |
-| [`src/emission-guard.ts`](../src/emission-guard.ts) | Suppress duplicate, empty, content-free, and over-budget reports. |
-| [`src/message-format.ts`](../src/message-format.ts) | Normalize notes and make XML-safe primary messages. |
-| [`src/renderer.ts`](../src/renderer.ts) | Render compact micro-manager cards in the TUI. |
-| [`src/prompt.ts`](../src/prompt.ts) | Build the review system prompt from fixed and configured instructions. |
-| [`src/workspace-tools.ts`](../src/workspace-tools.ts) | Wrap Pi read-only tools and reject paths that escape the trusted workspace. |
+| [`src/core/session.ts`](../src/core/session.ts) | Own one primary session's review: managers, transcript cursor, delivery policy, interruption immunity, headless buffering, and status. Define the `MicroManagerHost` port. |
+| [`src/core/runner.ts`](../src/core/runner.ts) | Own one review conversation, queue, model loop, tool execution, retry policy, timeout, and usage. |
+| [`src/core/model.ts`](../src/core/model.ts) | Define the `ReviewModel` port: one model step with neutral messages and tool specs. |
+| [`src/core/tools.ts`](../src/core/tools.ts) | Define the read-only tool specs and the `Workspace` port. Validate arguments and confine paths before a host runs a tool. |
+| [`src/core/config.ts`](../src/core/config.ts) | Validate parsed `MICRO_MANAGER` files and merge them in load order. |
+| [`src/core/transcript.ts`](../src/core/transcript.ts) | Track primary history, render deltas, bound input, and redact common secrets. |
+| [`src/core/emission-guard.ts`](../src/core/emission-guard.ts) | Suppress duplicate, empty, content-free, and over-budget reports. |
+| [`src/core/message-format.ts`](../src/core/message-format.ts) | Normalize notes and make XML-safe primary messages. |
+| [`src/core/prompt.ts`](../src/core/prompt.ts) | Build the review system prompt from fixed and configured instructions. |
+| [`src/pi/extension.ts`](../src/pi/extension.ts) | Register Pi hooks, the process flag, the command, and the message renderer. Resolve trust, create the session, and map deliveries to Pi messages. |
+| [`src/pi/model.ts`](../src/pi/model.ts) | Resolve Pi model selectors and run review steps through Pi's model registry with native tool calling. |
+| [`src/pi/workspace.ts`](../src/pi/workspace.ts) | Run Pi's own `read`, `grep`, `find`, and `ls` tools for the core. |
+| [`src/pi/transcript.ts`](../src/pi/transcript.ts) | Map Pi session-branch entries to transcript items. |
+| [`src/pi/config-files.ts`](../src/pi/config-files.ts) | Discover and read user and trusted project `MICRO_MANAGER` files, and parse YAML. |
+| [`src/pi/renderer.ts`](../src/pi/renderer.ts) | Render compact micro-manager cards in the TUI. |
+| [`src/core/text-protocol.ts`](../src/core/text-protocol.ts) | Turn one-prompt text completion into a `ReviewModel` with JSON tool calls, for hosts without native tool calling. |
+| [`src/core/config-discovery.ts`](../src/core/config-discovery.ts) | Find and read configuration files through a host file-system port, with one load order and one set of file rules. |
+| [`src/core/commands.ts`](../src/core/commands.ts) | Run `/micro-manager` actions; hosts only show the result. |
+| [`src/claude-code/register.tsx`](../src/claude-code/register.tsx) | Build the engine port from closures over `$`, forward engine events, and draw the note band and footer face. |
+| [`src/claude-code/adapter.ts`](../src/claude-code/adapter.ts) | Implement `MicroManagerHost` for one Claude Code session: delivery, status, turn boundaries, and headless settlement. |
+| [`src/claude-code/history.ts`](../src/claude-code/history.ts) | Build review evidence from `session.append` rows. |
+| [`src/claude-code/workspace.ts`](../src/claude-code/workspace.ts) | Run `read` and `ls` through `$.fs`, and `grep` and `find` through ripgrep. |
+| [`src/claude-code/model.ts`](../src/claude-code/model.ts) | Resolve Claude model selectors and run steps through `$.model.complete` with the text protocol. |
+| [`src/claude-code/card.ts`](../src/claude-code/card.ts) | Format notes as plain-text notice rows, and pick the face for the worst note. |
 
-`MicroManagerRunner` is the main deep module. Its interface is `enqueue`, `reset`, `dispose`, `waitForIdle`, `stats`, and `dump`. It hides provider calls, tool rounds, context limits, retries, and cancellation.
+`MicroManagerSession` is the main deep module. A host drives it with `turnEnded`, `reset`, `setEnabled`, `configure`, `primaryModelChanged`, `settle`, and `dispose`, and reads `statusText`, `footer`, and `dump`. It hides runners, the transcript cursor, delivery policy, and immunity.
+
+`MicroManagerRunner` sits behind it. It hides provider calls, tool rounds, context limits, retries, and cancellation.
+
+## Host port
+
+A host implements `MicroManagerHost`:
+
+| Member | Pi adapter |
+|---|---|
+| `resolveModel(selector, thinking)` | Find the model in Pi's registry, or use the primary model. |
+| `workspace` | Pi's read-only tools, rooted at the session directory. |
+| `history()` | The current session branch, mapped to transcript items. |
+| `primary()` | Pi's mode and idle state. |
+| `deliver(delivery)` | Send a custom message, follow-up, or steer, or append print-mode metadata. |
+| `changed()` | Redraw the footer status. |
+| `sleep(ms, signal)` | `setTimeout`. The core has no timers of its own. |
+
+The Claude Code adapter implements the same port:
+
+| Member | Claude Code adapter |
+|---|---|
+| `resolveModel(selector, thinking)` | A Claude alias or ID for `$.model.complete`; Sonnet when the configuration names none. |
+| `workspace` | `$.fs` for `read` and `ls`; ripgrep through `$.process.run` for `grep` and `find`. |
+| `history()` | Main-conversation rows from `session.append`, minus thinking, attachments, notices, and its own rows. |
+| `primary()` | `-p` when no surface draws; busy between `turn.start` and `turn.complete`. |
+| `deliver(delivery)` | The band above the prompt, a notice row for the record, and a hidden user row the model reads, or `$.prompt.submit` to wake. |
+| `changed()` | `$.ui.status`. |
+| `sleep(ms, signal)` | `$.clock.sleep`. |
+
+A mod may not store or pass `$`. `register.tsx` therefore builds a `ClaudeCodeApi` from closures over the `$` of `session.start`, and the adapter uses only that interface. Tests drive the adapter with an in-memory `ClaudeCodeApi`.
+
+Claude Code's turn boundary is the end of each main-loop model response, in `turn.step`: the response's rows are stored by then, with the previous step's tool results. In `-p`, the final step also waits for review there, because Claude Code stores a headless run's rows only while its turn is open.
+
+Claude Code's live view hides notice rows that a plugin appends; only the verbose transcript draws them. So the adapter draws notes in the band above the prompt (`AbovePrompt`) and its face beside the footer's mode labels (`SessionMode`), and redraws both with `$.ui.invalidate`. The band keeps at most three notes, dropping the oldest of the mildest first, and clears on the person's next prompt. The notice rows stay as the record that the transcript file and `claude -p` keep.
+
+A `ReviewModel` returns each reply with an optional `native` record. The core stores it with the private conversation and hands it back on later steps, so a provider receives its own thinking signatures and reasoning items intact.
 
 ## Lifecycle
 
@@ -76,9 +135,11 @@ The `turn_end` hook does not await background review. One slow or failed manager
 
 ## Model seam
 
-The runner calls `ctx.modelRegistry.complete()`. This call preserves Pi provider registration, authentication, headers, and custom model behavior.
+The Pi `ReviewModel` calls `ctx.modelRegistry.complete()`. This call preserves Pi provider registration, authentication, headers, and custom model behavior.
 
-The runner supplies Pi definitions for `read`, `grep`, `find`, and `ls`. A wrapper rejects paths and symbolic links that resolve outside the trusted workspace. The runner validates model-generated arguments before execution. Unknown tools return an error to the review model.
+Claude Code's `$.model.complete` takes one system prompt and one user message and returns text. The core's text protocol renders the private conversation and tool specs into that prompt and asks for one JSON object of tool calls. It reads the first such object in the reply and ignores any text around it. Tool results return XML-escaped, inside `<tool-result>` elements.
+
+The core supplies its own specs for `read`, `grep`, `find`, and `ls`. It validates model-generated arguments, then rejects paths and symbolic links that resolve outside the trusted workspace, before the host runs a tool. Unknown tools return an error to the review model.
 
 The runner implements the `report` tool locally. It normalizes and filters each note before any primary-session effect. It accepts at most one useful report per update.
 
@@ -92,13 +153,13 @@ A final failure records the latest error and releases that update. A later updat
 
 ## Context model
 
-Each runner keeps an in-memory Pi AI message list. New primary deltas append to this list. Tool calls and results stay in private context so later updates retain review continuity.
+Each runner keeps an in-memory list of neutral review messages. New primary deltas append to this list. Tool calls and results stay in private context so later updates retain review continuity.
 
 Before an update, the runner compares the serialized message estimate with `max_context_chars`. If the update cannot fit, it clears private context and starts with the bounded update. This reset also clears report deduplication because the model lost prior context.
 
 A single update cannot use more than half of `max_context_chars`. Each tool result has a context-derived text limit between 500 and 8,000 characters. Images become omission markers.
 
-The runner does not use private compaction APIs. A clean reset keeps the package independent from Pi session internals.
+The runner does not use private compaction APIs. A clean reset keeps the core independent from any host's session internals.
 
 ## Primary transcript cursor
 
@@ -158,10 +219,14 @@ Visible cards and print-mode report metadata use normal Pi session persistence. 
 Tests follow the module boundaries:
 
 - [`tests/config.test.ts`](../tests/config.test.ts) covers validation, merge order, aliases, limits, and symbolic links.
-- [`tests/extension.test.ts`](../tests/extension.test.ts) covers registration, delivery, immunity, trust, and headless settlement.
-- [`tests/runner.test.ts`](../tests/runner.test.ts) covers tools, deduplication, retries, limits, aborts, and usage.
+- [`tests/extension.test.ts`](../tests/extension.test.ts) covers registration, delivery, immunity, trust, and headless settlement through the Pi adapter.
+- [`tests/runner.test.ts`](../tests/runner.test.ts) covers tools, argument errors, deduplication, retries, limits, timeouts, aborts, and usage with in-memory ports.
+- [`tests/pi-model.test.ts`](../tests/pi-model.test.ts) covers the Pi model mapping and provider-reply passthrough.
 - [`tests/transcript.test.ts`](../tests/transcript.test.ts) covers deltas, rewrites, redaction, omission, and hard bounds.
 - [`tests/workspace-tools.test.ts`](../tests/workspace-tools.test.ts) covers path and symbolic-link confinement.
+- [`tests/text-protocol.test.ts`](../tests/text-protocol.test.ts) covers prompt rendering, reply extraction, and escaping.
+- [`tests/claude-code.test.ts`](../tests/claude-code.test.ts) covers the Claude Code paths, the band, history, workspace, model selectors, and delivery through an in-memory engine port.
+- [`tests/package.test.ts`](../tests/package.test.ts) covers both entry points and the shared version.
 - [`tests/renderer.test.ts`](../tests/renderer.test.ts) covers card sanitization and display.
 
-Run `pnpm verify` to execute the TypeScript check, all tests, and the package dry run.
+Run `pnpm verify` to execute both TypeScript checks, all tests, and the package dry run. `pnpm check:claude-code` checks `register.tsx` against the engine's types, which Claude Code writes to `.claude-plugin/types` when it loads the checkout.

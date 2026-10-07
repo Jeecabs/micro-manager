@@ -3,25 +3,36 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
-import { createWorkspaceTools } from "../src/workspace-tools.ts";
+import { isWithin, runWorkspaceTool } from "../src/core/tools.ts";
+import { createPiWorkspace } from "../src/pi/workspace.ts";
 
 test("read-only tools reject paths and links outside the trusted workspace", async (t) => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "micro-manager-workspace-"));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
-  const workspace = path.join(temp, "workspace");
+  const root = path.join(temp, "workspace");
   const outside = path.join(temp, "outside.txt");
-  await fs.mkdir(workspace);
-  await fs.writeFile(path.join(workspace, "inside.txt"), "inside\n");
+  await fs.mkdir(root);
+  await fs.writeFile(path.join(root, "inside.txt"), "inside\n");
   await fs.writeFile(outside, "outside\n");
-  await fs.symlink(outside, path.join(workspace, "linked.txt"));
+  await fs.symlink(outside, path.join(root, "linked.txt"));
 
-  const read = createWorkspaceTools(["read"], workspace)[0];
-  assert.ok(read);
+  const workspace = createPiWorkspace(root);
   const signal = new AbortController().signal;
-  const inside = await read.execute("inside", { path: "inside.txt" }, signal);
-  assert.match(inside.content[0]?.type === "text" ? inside.content[0].text : "", /inside/);
+  const read = (target: string) => runWorkspaceTool(workspace, "read", { path: target }, "call", signal);
 
-  await assert.rejects(read.execute("absolute", { path: outside }, signal), /inside the trusted workspace/);
-  await assert.rejects(read.execute("parent", { path: "../outside.txt" }, signal), /inside the trusted workspace/);
-  await assert.rejects(read.execute("link", { path: "linked.txt" }, signal), /link outside the trusted workspace/);
+  const inside = await read("inside.txt");
+  assert.match(inside[0]?.type === "text" ? inside[0].text : "", /inside/);
+
+  await assert.rejects(read(outside), /inside the trusted workspace/);
+  await assert.rejects(read("../outside.txt"), /inside the trusted workspace/);
+  await assert.rejects(read("linked.txt"), /link outside the trusted workspace/);
+});
+
+test("isWithin needs a separator after the root, on either platform", () => {
+  assert.equal(isWithin("/ws", "/ws"), true);
+  assert.equal(isWithin("/ws/", "/ws/a/b"), true);
+  assert.equal(isWithin("/ws", "/ws-other/file"), false);
+  assert.equal(isWithin("/", "/etc/hosts"), true);
+  assert.equal(isWithin("C:\\ws", "C:\\ws\\file"), true);
+  assert.equal(isWithin("C:\\ws", "C:\\wsx"), false);
 });
