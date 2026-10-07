@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import {
   CONFIG_DIR_NAME,
   getAgentDir,
@@ -6,6 +7,7 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { REVIEW_FRAME_MS } from "../core/face.ts";
 import { MICRO_MANAGER_COMMAND_ACTIONS, runMicroManagerCommand } from "../core/commands.ts";
 import { MicroManagerSession, type Delivery, type MicroManagerHost } from "../core/session.ts";
 import type { MicroManagerConfiguration } from "../core/types.ts";
@@ -15,13 +17,13 @@ import {
   type MicroManagerConfigDiscoveryOptions,
 } from "./config-files.ts";
 import { resolvePiReviewModel } from "./model.ts";
-import { renderMicroManagerMessage } from "./renderer.ts";
+import { renderMicroManagerMessage, renderMicroManagerReportEntry, renderMicroManagerStatus } from "./renderer.ts";
 import { piHistory } from "./transcript.ts";
 import { createPiWorkspace } from "./workspace.ts";
 
 const STATUS_KEY = "micro-manager";
-// ponytail: blink is a footer-status timer, not setWorkingIndicator — that would hijack the primary spinner
-const BLINK_INTERVAL_MS = 600;
+const STATUS_ENTRY = "micro-manager-status";
+const REPORT_ENTRY = "micro-manager-report";
 
 interface ProjectTrustAccess {
   hasStandardResources(cwd: string): boolean;
@@ -52,8 +54,8 @@ export function registerMicroManagerExtension(
   const discoverConfig = dependencies.discoverConfig ?? discoverMicroManagerConfiguration;
   let session: MicroManagerSession | undefined;
   let loadEpoch = 0;
-  let blinkTimer: ReturnType<typeof setInterval> | undefined;
-  let blinkFrame = 0;
+  let animationTimer: ReturnType<typeof setInterval> | undefined;
+  let animationFrame = 0;
 
   pi.registerFlag("micro-manager", {
     description: "Enable The Micro Manager for this process",
@@ -62,6 +64,8 @@ export function registerMicroManagerExtension(
   });
 
   pi.registerMessageRenderer("micro-manager", renderMicroManagerMessage);
+  pi.registerEntryRenderer(STATUS_ENTRY, renderMicroManagerStatus);
+  pi.registerEntryRenderer(REPORT_ENTRY, renderMicroManagerReportEntry);
 
   pi.registerCommand("micro-manager", {
     description: "Inspect or control The Micro Manager",
@@ -70,6 +74,11 @@ export function registerMicroManagerExtension(
       return matches.length > 0 ? matches : null;
     },
     handler: async (args, ctx) => {
+      if ((args.trim().toLowerCase() || "status") === "status" && ctx.mode === "tui" && session) {
+        const snapshot = session.statusSnapshot();
+        pi.appendEntry(STATUS_ENTRY, { ...snapshot, sources: snapshot.sources.map(shortenHome) });
+        return;
+      }
       const output = await runMicroManagerCommand(session, args, {
         reload: () => loadConfiguration(ctx, true),
         configGuidance: () => configGuidance(ctx),
@@ -150,7 +159,7 @@ export function registerMicroManagerExtension(
       details: delivery.details,
     };
     if (delivery.kind === "record") {
-      pi.appendEntry("micro-manager-report", { content: message.content, details: message.details });
+      pi.appendEntry(REPORT_ENTRY, { content: message.content, details: message.details });
     } else if (delivery.kind === "show") {
       pi.sendMessage(message);
     } else if (delivery.kind === "followUp") {
@@ -163,7 +172,7 @@ export function registerMicroManagerExtension(
   function endSession(): void {
     session?.dispose();
     session = undefined;
-    stopBlink();
+    stopAnimation();
   }
 
   function outputCommandText(ctx: ExtensionContext, text: string, type: "info" | "warning" | "error"): void {
@@ -225,32 +234,38 @@ export function registerMicroManagerExtension(
     return true;
   }
 
-  function stopBlink(): void {
-    if (!blinkTimer) return;
-    clearInterval(blinkTimer);
-    blinkTimer = undefined;
-    blinkFrame = 0;
+  // ponytail: the face animates through footer status, not setWorkingIndicator — that would hijack the primary spinner
+  function stopAnimation(): void {
+    if (!animationTimer) return;
+    clearInterval(animationTimer);
+    animationTimer = undefined;
+    animationFrame = 0;
   }
 
   function refreshStatus(ctx: ExtensionContext): void {
     if (!ctx.hasUI) return;
     if (!session) {
-      stopBlink();
+      stopAnimation();
       ctx.ui.setStatus(STATUS_KEY, undefined);
       return;
     }
-    const footer = session.footer(blinkFrame);
-    if (footer.animating && !blinkTimer) {
-      blinkTimer = setInterval(() => {
-        blinkFrame++;
+    const footer = session.footer(animationFrame);
+    if (footer.animating && !animationTimer) {
+      animationTimer = setInterval(() => {
+        animationFrame++;
         refreshStatus(ctx);
-      }, BLINK_INTERVAL_MS);
-      blinkTimer.unref?.();
+      }, REVIEW_FRAME_MS);
+      animationTimer.unref?.();
     } else if (!footer.animating) {
-      stopBlink();
+      stopAnimation();
     }
     ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(footer.tone, footer.text));
   }
+}
+
+function shortenHome(path: string): string {
+  const home = homedir();
+  return home && path.startsWith(home) ? `~${path.slice(home.length)}` : path;
 }
 
 export function sleep(ms: number, signal: AbortSignal): Promise<void> {

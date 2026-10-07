@@ -1,3 +1,4 @@
+import { REVIEW_FRAME_MS } from "../core/face.ts";
 import { runMicroManagerCommand } from "../core/commands.ts";
 import { MicroManagerSession, type Delivery, type FooterStatus, type MicroManagerHost } from "../core/session.ts";
 import type { MicroManagerNote } from "../core/types.ts";
@@ -10,7 +11,7 @@ import { createClaudeCodeWorkspace } from "./workspace.ts";
 
 // Claude Code gives a hook 10 seconds; a `claude -p` run waits this long for the final review.
 const HEADLESS_SETTLE_MS = 8_000;
-const BLINK_INTERVAL_MS = 600;
+const BLINK_INTERVAL_MS = REVIEW_FRAME_MS;
 // The band stays glanceable; every note is still in the transcript and with the model.
 const BAND_LIMIT = 3;
 const SEVERITY_RANK = { nit: 0, concern: 1, blocker: 2 } as const;
@@ -165,9 +166,9 @@ export class ClaudeCodeMicroManager {
     }
     // The face lives in the footer; the warning line is for trouble alone.
     const problem =
-      footer.tone === "error"
+      footer.state === "error"
         ? `${footer.text} a review failed; see /micro-manager status`
-        : footer.tone === "warning" && !footer.animating
+        : footer.state === "no_model"
           ? `${footer.text} no review model resolved; see /micro-manager status`
           : undefined;
     if (problem !== this.#problem) {
