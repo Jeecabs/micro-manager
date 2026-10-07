@@ -9,7 +9,7 @@ import { SEVERITY_FACES, worstSeverity } from "./card.ts";
 
 const PLUGIN = "micro-manager";
 const SEVERITY_COLORS = { nit: "subtle", concern: "warning", blocker: "error" } as const;
-const FACE_COLORS = { dim: "inactive", muted: "subtle", warning: "warning", error: "error" } as const;
+const FACE_COLORS = { accent: "claude", dim: "inactive", muted: "subtle", warning: "warning", error: "error" } as const;
 // ponytail: a longer manager name is cut so the notes keep their column
 const MANAGER_COLUMNS = 16;
 

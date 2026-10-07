@@ -68,7 +68,7 @@ enabled: true
 
 Then run `/micro-manager reload`, or start a new session. `/micro-manager on` enables review for the current session only. Managers review with Sonnet at Claude Code's lowest effort unless `model` or `thinking` says otherwise.
 
-Notes appear in the band above the prompt until your next prompt. The face escalates with severity: `¬_¬` for a nit, `ò_ó` for a concern, and `Ò_Ó` for a blocker. The footer shows `¬_¬` while the manager watches and blinks while it reviews. A warning line appears only when a review fails or no model resolves.
+Notes appear in the band above the prompt until your next prompt. The face escalates with severity: `¬_¬` for a nit, `ò_ó` for a concern, and `Ò_Ó` for a blocker. The footer face works as in Pi; see [Read the face](#read-the-face). A warning line appears only when a review fails or no model resolves.
 
 See [Configuration](./docs/configuration.md) for model selectors, named managers, limits, file precedence, and project trust.
 
@@ -142,6 +142,24 @@ In Pi, the process flag overrides `enabled` for one Pi process:
 ```sh
 pi --micro-manager -p "Review this change."
 ```
+
+## Read the face
+
+The footer shows the manager's face:
+
+| Face | Meaning |
+|---|---|
+| `(¬_¬ )` | Watching. `×2` shows the number of running managers. |
+| `(¬_¬ )` → `( ¬_¬)` | Reviewing. The eyes move until the backlog drains. |
+| `(¬_¬) fine.` | The last review found nothing to report. |
+| `(-_-) sigh.` | The last review reported a nit. |
+| `(¬_¬) hm.` | The last review reported a concern. |
+| `(ò_ó) stop.` | The last review reported a blocker. |
+| `(-_-) zz` | Review is disabled. |
+| `(×_×)` | A manager failed. Run `/micro-manager status`. |
+| `(?_?)` | No manager has a model. |
+
+Reactions last five seconds. Report cards use the same faces for their most severe note.
 
 ## Report delivery
 

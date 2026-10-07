@@ -1,3 +1,4 @@
+import { FACES, IDLE_HEAD, REACTION_MS, REACTIONS, REVIEW_FRAMES, type Reaction } from "./face.ts";
 import { formatMicroManagerBatchContent, isInterruptingSeverity, microManagerMessageDetails } from "./message-format.ts";
 import type { ReviewModel, Sleep } from "./model.ts";
 import { buildMicroManagerSystemPrompt } from "./prompt.ts";
@@ -10,13 +11,15 @@ import {
   type MicroManagerDefinition,
   type MicroManagerMessageDetails,
   type MicroManagerNote,
+  type MicroManagerOverallState,
   type MicroManagerRuntimeStats,
   type MicroManagerSeverity,
+  type MicroManagerStatusSnapshot,
   type ThinkingLevel,
 } from "./types.ts";
 
 const HEADLESS_SETTLE_CAP_MS = 60_000;
-const BLINK_FRAMES = ["¬_¬", "¬_¬", "¬_¬", "-_-"];
+const SEVERITY_RANK: Record<MicroManagerSeverity, number> = { nit: 0, concern: 1, blocker: 2 };
 
 export type PrimaryMode = "interactive" | "json" | "print";
 
@@ -64,13 +67,15 @@ export interface MicroManagerSessionOptions {
   seed?: boolean;
 }
 
-export type FooterTone = "dim" | "muted" | "warning" | "error";
+export type FooterTone = "accent" | "dim" | "muted" | "warning" | "error";
 
 export interface FooterStatus {
   text: string;
   tone: FooterTone;
-  /** True while review work runs; redraw with the next frame to blink. */
+  /** True while review work runs; redraw with the next frame to move the eyes. */
   animating: boolean;
+  /** What the face means; a reaction keeps its tone but the state stays `watching`. */
+  state: MicroManagerOverallState;
 }
 
 /**
@@ -89,6 +94,9 @@ export class MicroManagerSession {
   #immuneTurnStart: number | undefined;
   #deliveredNotes = 0;
   #pendingHeadless: MicroManagerNote[] = [];
+  #reviewCycle: { turns: number; worst?: MicroManagerSeverity } | undefined;
+  #reaction: Reaction | undefined;
+  #reactionStop: AbortController | undefined;
   #disposed = false;
 
   constructor(host: MicroManagerHost, options: MicroManagerSessionOptions) {
@@ -125,7 +133,8 @@ export class MicroManagerSession {
       return;
     }
     this.#stopRunners();
-    this.#host.changed();
+    this.#clearReaction();
+    this.#changed();
   }
 
   /** The primary model changed; managers that inherit it restart from current history. */
@@ -143,16 +152,18 @@ export class MicroManagerSession {
     if (!delta) return;
     if (delta.reset) for (const runner of this.#runners) runner.reset();
     for (const runner of this.#runners) runner.enqueue(delta.text);
-    this.#host.changed();
+    this.#changed();
   }
 
   /** History was compacted or rewritten. Managers drop their private context. */
   reset(): void {
     this.#cursor.reset();
+    this.#reviewCycle = undefined;
+    this.#clearReaction();
     this.#pendingHeadless = [];
     for (const runner of this.#runners) runner.reset();
     this.#immuneTurnStart = undefined;
-    this.#host.changed();
+    this.#changed();
   }
 
   /**
@@ -196,21 +207,54 @@ export class MicroManagerSession {
     return lines.join("\n");
   }
 
+  /** Overall state for status cards; `reviewing` while any backlog exists. */
+  overallState(): MicroManagerOverallState {
+    const stats = this.stats();
+    if (!this.enabled) return "off";
+    if (stats.some((stat) => stat.state === "error")) return "error";
+    if (this.#runners.length === 0) return stats.some((stat) => stat.state === "no_model") ? "no_model" : "off";
+    return stats.some((stat) => stat.backlog > 0) ? "reviewing" : "watching";
+  }
+
+  statusSnapshot(): MicroManagerStatusSnapshot {
+    const configuration = this.#configuration;
+    return {
+      state: this.overallState(),
+      managers: this.stats().map((stat) => ({
+        name: stat.name,
+        state: stat.state,
+        ...(stat.model ? { model: stat.model } : {}),
+        backlog: stat.backlog,
+        turns: stat.turns,
+        inputTokens: stat.inputTokens,
+        outputTokens: stat.outputTokens,
+        ...(stat.cost === undefined ? {} : { cost: stat.cost }),
+        ...(stat.lastError ? { lastError: stat.lastError } : {}),
+      })),
+      sources: [...configuration.sources],
+      warnings: [...configuration.errors],
+      projectConfigIgnored: configuration.projectConfigDetected && !configuration.projectConfigLoaded,
+      delivered: this.#deliveredNotes,
+    };
+  }
+
   /** The footer face. While `animating`, a host redraws with increasing `frame`s. */
   footer(frame: number): FooterStatus {
     const stats = this.stats();
     const hasError = stats.some((stat) => stat.state === "error");
     const backlog = stats.reduce((sum, stat) => sum + stat.backlog, 0);
+    const count = this.#runners.length > 1 ? ` ×${this.#runners.length}` : "";
     if (this.enabled && !hasError && backlog > 0) {
-      return { text: `${BLINK_FRAMES[frame % BLINK_FRAMES.length]} …`, tone: "warning", animating: true };
+      return { text: REVIEW_FRAMES[frame % REVIEW_FRAMES.length]! + count, tone: "accent", animating: true, state: "reviewing" };
     }
-    if (!this.enabled) return { text: "^_^", tone: "dim", animating: false };
-    if (hasError) return { text: "¬_¬ !", tone: "error", animating: false };
-    if (this.#runners.length > 0) {
-      const count = this.#runners.length > 1 ? ` ×${this.#runners.length}` : "";
-      return { text: `¬_¬${count}`, tone: "muted", animating: false };
+    if (!this.enabled) return { text: `${FACES.asleep} zz`, tone: "dim", animating: false, state: "off" };
+    if (hasError) return { text: FACES.error, tone: "error", animating: false, state: "error" };
+    if (this.#runners.length === 0) return { text: FACES.confused, tone: "warning", animating: false, state: "no_model" };
+    if (this.#reaction) {
+      const look = REACTIONS[this.#reaction];
+      return { text: `${look.face} ${look.word}`, tone: look.color, animating: false, state: "watching" };
     }
-    return { text: "¬_¬ ?", tone: "warning", animating: false };
+    return { text: IDLE_HEAD + count, tone: "muted", animating: false, state: "watching" };
   }
 
   dump(): string {
@@ -224,6 +268,7 @@ export class MicroManagerSession {
     this.#disposed = true;
     this.#pendingHeadless = [];
     this.#stopRunners();
+    this.#clearReaction();
     this.#cursor.reset();
   }
 
@@ -266,14 +311,14 @@ export class MicroManagerSession {
               if (epoch === this.#epoch) this.#route({ ...note, model: model.label });
             },
             onStateChange: () => {
-              if (epoch === this.#epoch) this.#host.changed();
+              if (epoch === this.#epoch) this.#changed();
             },
           }),
         );
       }
     }
     if (seed) this.#cursor.seed(this.#host.history());
-    this.#host.changed();
+    this.#changed();
   }
 
   #stopRunners(): void {
@@ -283,12 +328,59 @@ export class MicroManagerSession {
     for (const runner of current) runner.dispose();
   }
 
+  /** Every state change goes through here so the face can notice a review cycle ending. */
+  #changed(): void {
+    this.#observeReviewCycle();
+    this.#host.changed();
+  }
+
+  /** A review cycle runs while any backlog exists; the face reacts once it drains after real model work. */
+  #observeReviewCycle(): void {
+    const stats = this.stats();
+    const turns = this.#runners.reduce((sum, runner) => sum + runner.stats.turns, 0);
+    if (stats.some((stat) => stat.backlog > 0)) {
+      this.#reviewCycle ??= { turns };
+      return;
+    }
+    const cycle = this.#reviewCycle;
+    this.#reviewCycle = undefined;
+    if (!cycle || stats.some((stat) => stat.state === "error") || !this.enabled || turns <= cycle.turns) return;
+    this.#react(cycle.worst ?? "clean");
+  }
+
+  #react(kind: Reaction): void {
+    this.#clearReaction();
+    this.#reaction = kind;
+    const stop = new AbortController();
+    this.#reactionStop = stop;
+    // ponytail: the core has no timers, so the reaction expires through the host's abortable sleep
+    this.#host.sleep(REACTION_MS, stop.signal).then(
+      () => {
+        if (this.#reactionStop !== stop) return;
+        this.#reactionStop = undefined;
+        this.#reaction = undefined;
+        this.#host.changed();
+      },
+      () => {},
+    );
+  }
+
+  #clearReaction(): void {
+    this.#reactionStop?.abort();
+    this.#reactionStop = undefined;
+    this.#reaction = undefined;
+  }
+
   #route(note: MicroManagerNote): void {
     this.#deliveredNotes++;
+    const severity = note.severity ?? "nit";
+    if (this.#reviewCycle && SEVERITY_RANK[severity] >= SEVERITY_RANK[this.#reviewCycle.worst ?? "nit"]) {
+      this.#reviewCycle.worst = severity;
+    }
     const primary = this.#host.primary();
     if (primary.mode !== "interactive") {
       this.#pendingHeadless.push(note);
-      this.#host.changed();
+      this.#changed();
       return;
     }
     const immune =

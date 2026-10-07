@@ -5,7 +5,7 @@ import type { MicroManagerNote, MicroManagerSeverity } from "../core/types.ts";
 export const SEVERITY_FACES: Record<MicroManagerSeverity, string> = { nit: "¬_¬", concern: "ò_ó", blocker: "Ò_Ó" };
 
 /**
- * The plain-text record of delivered notes, one line per note: `¬_¬ ▲ [Architecture] note`.
+ * The plain-text record of delivered notes, one line per note: `¬_¬ ! [Architecture] note`.
  * Claude Code stores it as a notice row: the transcript file, `claude -p` and the verbose
  * transcript keep it; the live view shows the band instead.
  */

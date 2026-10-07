@@ -36,3 +36,31 @@ test("removes terminal controls from persisted names and notes", () => {
   assert.match(rendered, /Architecture/);
   assert.match(rendered, /safe note/);
 });
+
+test("sorts blockers first so a collapsed card never hides them", () => {
+  const theme = {
+    bg: (_color: string, text: string) => text,
+    fg: (_color: string, text: string) => text,
+    bold: (text: string) => text,
+  } as Theme;
+  const nit = { note: "minor", severity: "nit" as const };
+  const component = renderMicroManagerMessage(
+    {
+      role: "custom",
+      customType: "micro-manager",
+      content: "",
+      display: true,
+      timestamp: Date.now(),
+      details: { notes: [nit, nit, nit, { note: "drops the batch", severity: "blocker" }] },
+    },
+    { expanded: false, outputPad: 0 },
+    theme,
+  );
+
+  assert.ok(component);
+  const lines = component.render(80);
+  const body = lines.filter((line) => line.trim());
+  assert.match(body[0]!, /\(ò_ó\) \[micro-manager\]\s+1 blocker · 3 nits/);
+  assert.match(body[1]!, /✗ drops the batch/);
+  assert.match(body.at(-1)!, /\+1 more/);
+});
