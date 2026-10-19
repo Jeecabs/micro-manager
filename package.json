@@ -63,7 +63,7 @@
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.2",
     "typebox": "^1.1.38",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "yaml": "^2.8.1"
   },
   "engines": {
